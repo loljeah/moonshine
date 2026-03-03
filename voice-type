@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Voice-to-clipboard/type using Moonshine
+# Usage: voice-type [seconds] [clipboard|type|both]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DURATION="${1:-5}"
+MODE="${2:-clipboard}"
+MOONSHINE_DIR="$HOME/.local/share/moonshine-pkgs"
+
+# Check if moonshine is installed
+if [ ! -f "$MOONSHINE_DIR/.installed" ]; then
+  notify-send -t 3000 "Voice Input" "Moonshine not installed. Run: nix-shell ~/.local/share/moonshine/shell.nix"
+  exit 1
+fi
+
+# Record and transcribe - notification happens INSIDE nix-shell after deps load
+TEXT=$(NIX_SHELL_RUN=1 nix-shell "$SCRIPT_DIR/shell.nix" --run "
+  notify-send -t 2000 'Voice Input' 'Recording for ${DURATION}s...'
+  python3 '$SCRIPT_DIR/transcribe.py' '$DURATION'
+" 2>/dev/null)
+
+if [ -z "$TEXT" ]; then
+  notify-send -t 2000 "Voice Input" "No speech detected"
+  exit 0
+fi
+
+# Copy to clipboard
+echo -n "$TEXT" | wl-copy
+
+# Notify success
+notify-send -t 3000 "Voice Input" "Copied: $TEXT"
+
+# If mode is "type" or "both", simulate typing
+if [ "$MODE" = "type" ] || [ "$MODE" = "both" ]; then
+  sleep 0.2
+  wtype -d 10 "$TEXT"
+fi

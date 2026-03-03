@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#
+# Waybar custom module for Moonshine voice status
+# Shows mic icon when recording, hidden otherwise
+#
+
+STATE_FILE="/tmp/moonshine/status"
+STATUS=$(cat "$STATE_FILE" 2>/dev/null || echo "idle")
+
+case "$STATUS" in
+    recording)
+        echo '{"text": "🎙️ REC", "class": "recording", "tooltip": "Recording... click to stop"}'
+        ;;
+    processing)
+        echo '{"text": "⏳", "class": "processing", "tooltip": "Transcribing..."}'
+        ;;
+    *)
+        # Hidden when idle
+        echo '{"text": "", "class": "idle", "tooltip": "Click to record voice"}'
+        ;;
+esac

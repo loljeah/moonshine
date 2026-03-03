@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# 🎙️ MOONSHINE VOICE TOGGLE
+#
+# One button. Press to record. Press again to transcribe.
+# Works from anywhere on Wayland.
+#
+# Usage: voice-toggle [clipboard|type]
+#   clipboard (default) - copies transcription to clipboard
+#   type - types directly into focused window
+#
+
+set -euo pipefail
+
+# === CONFIG ===
+MODE="${1:-clipboard}"
+MOONSHINE_DIR="$HOME/.local/share/moonshine"
+STATE_DIR="/tmp/moonshine"
+LOCK_FILE="$STATE_DIR/recording.lock"
+AUDIO_FILE="$STATE_DIR/audio.raw"
+MODE_FILE="$STATE_DIR/mode"
+PID_FILE="$STATE_DIR/rec.pid"
+
+# Sounds
+SOUND_START="$MOONSHINE_DIR/sounds/start.wav"
+SOUND_STOP="$MOONSHINE_DIR/sounds/stop.wav"
+SOUND_SUCCESS="$MOONSHINE_DIR/sounds/success.wav"
+SOUND_ERROR="$MOONSHINE_DIR/sounds/error.wav"
+
+# === HELPERS ===
+play_sound() {
+    [ -f "$1" ] && pw-play "$1" 2>/dev/null &
+}
+
+update_waybar() {
+    pkill -RTMIN+10 waybar 2>/dev/null || true
+}
+
+notify() {
+    notify-send -a "Moonshine" -i microphone-sensitivity-high "$1" "$2" -t "${3:-3000}"
+}
+
+# === SETUP ===
+mkdir -p "$STATE_DIR"
+mkdir -p "$MOONSHINE_DIR/sounds"
+
+# === MAIN LOGIC ===
+if [ -f "$LOCK_FILE" ]; then
+    # ╔═══════════════════════════════════════╗
+    # ║  STOP RECORDING & TRANSCRIBE          ║
+    # ╚═══════════════════════════════════════╝
+
+    MODE=$(cat "$MODE_FILE" 2>/dev/null || echo "clipboard")
+
+    # Signal waybar: processing
+    echo "processing" > "$STATE_DIR/status"
+    update_waybar
+
+    play_sound "$SOUND_STOP"
+
+    # Remove lock file to signal recording to stop
+    rm -f "$LOCK_FILE"
+
+    # Wait for recording process to finish and write file
+    if [ -f "$PID_FILE" ]; then
+        REC_PID=$(cat "$PID_FILE")
+        for i in {1..30}; do
+            kill -0 "$REC_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        rm -f "$PID_FILE"
+    fi
+
+    # Extra wait for file write
+    sleep 0.2
+
+    if [ ! -f "$AUDIO_FILE" ] || [ ! -s "$AUDIO_FILE" ]; then
+        echo "idle" > "$STATE_DIR/status"
+        update_waybar
+        notify "No Audio" "Recording was empty" 2000
+        play_sound "$SOUND_ERROR"
+        exit 0
+    fi
+
+    # Transcribe
+    TEXT=$(nix-shell "$MOONSHINE_DIR/shell.nix" --run "python3 '$MOONSHINE_DIR/transcribe.py'" 2>/dev/null)
+
+    rm -f "$AUDIO_FILE"
+    echo "idle" > "$STATE_DIR/status"
+    update_waybar
+
+    if [ -z "$TEXT" ]; then
+        notify "No Speech" "Couldn't detect any words" 2000
+        play_sound "$SOUND_ERROR"
+        exit 0
+    fi
+
+    # Output based on mode
+    echo -n "$TEXT" | wl-copy
+    play_sound "$SOUND_SUCCESS"
+
+    if [ "$MODE" = "type" ]; then
+        notify "Typing..." "$TEXT" 1500
+        sleep 0.2
+        nix-shell -p wtype --run "wtype -d 12 '$TEXT'" 2>/dev/null || {
+            notify "Copied" "$TEXT (wtype failed, use Ctrl+V)" 3000
+        }
+    else
+        notify "✓ Copied" "$TEXT" 3000
+    fi
+
+else
+    # ╔═══════════════════════════════════════╗
+    # ║  START RECORDING                      ║
+    # ╚═══════════════════════════════════════╝
+
+    # Check moonshine installed
+    if [ ! -f "$MOONSHINE_DIR/shell.nix" ]; then
+        notify "Moonshine Not Found" "Install moonshine first" 5000
+        exit 1
+    fi
+
+    # Clean up old files
+    rm -f "$AUDIO_FILE" "$LOCK_FILE"
+
+    # Create lock and save mode
+    touch "$LOCK_FILE"
+    echo "$MODE" > "$MODE_FILE"
+
+    # Signal waybar: recording
+    echo "recording" > "$STATE_DIR/status"
+    update_waybar
+
+    play_sound "$SOUND_START"
+    notify "🎙️ Recording" "Press again to stop" 1500
+
+    # Start recording in background
+    nix-shell "$MOONSHINE_DIR/shell.nix" --run "python3 '$MOONSHINE_DIR/record-simple.py'" &
+    echo $! > "$PID_FILE"
+fi

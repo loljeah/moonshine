@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Voice recording toggle - press once to start, press again to stop
+# Usage: voice-record toggle [clipboard|type|both]
+
+SCRIPT_DIR="$HOME/.local/share/moonshine"
+MODE="${2:-${1:-clipboard}}"
+MOONSHINE_DIR="$HOME/.local/share/moonshine-pkgs"
+LOCK_FILE="/tmp/moonshine-recording.lock"
+AUDIO_FILE="/tmp/moonshine-audio.raw"
+MODE_FILE="/tmp/moonshine-mode"
+STOP_FILE="/tmp/moonshine-stop"
+
+# Toggle logic: if recording, stop; if not, start
+if [ -f "$LOCK_FILE" ]; then
+  # === STOP RECORDING ===
+  MODE=$(cat "$MODE_FILE" 2>/dev/null || echo "clipboard")
+
+  # Signal the recording to stop
+  touch "$STOP_FILE"
+
+  # Wait for recording to finish saving
+  for i in {1..20}; do
+    [ ! -f "$LOCK_FILE" ] && break
+    sleep 0.2
+  done
+
+  rm -f "$MODE_FILE" "$STOP_FILE"
+
+  if [ ! -f "$AUDIO_FILE" ]; then
+    notify-send -t 2000 "Voice Input" "No audio recorded"
+    exit 0
+  fi
+
+  notify-send -t 1000 "Voice Input" "Transcribing..."
+
+  TEXT=$(NIX_SHELL_RUN=1 nix-shell "$SCRIPT_DIR/shell.nix" --run "
+    python3 -c '
+import numpy as np
+from moonshine_voice import get_model_for_language
+from moonshine_voice.transcriber import Transcriber
+
+audio = np.fromfile(\"/tmp/moonshine-audio.raw\", dtype=np.float32)
+if len(audio) < 1600:
+    exit(0)
+
+model_path, model_arch = get_model_for_language(\"en\")
+t = Transcriber(str(model_path), model_arch)
+result = t.transcribe_without_streaming(audio.tolist(), 16000)
+
+if result and result.lines:
+    for line in result.lines:
+        print(line.text)
+'
+  " 2>/dev/null)
+
+  rm -f "$AUDIO_FILE"
+
+  if [ -z "$TEXT" ]; then
+    notify-send -t 2000 "Voice Input" "No speech detected"
+    exit 0
+  fi
+
+  echo -n "$TEXT" | wl-copy
+  notify-send -t 3000 "Voice Input" "Copied: $TEXT"
+
+  if [ "$MODE" = "type" ] || [ "$MODE" = "both" ]; then
+    sleep 0.2
+    wtype -d 10 "$TEXT"
+  fi
+
+else
+  # === START RECORDING ===
+
+  # Check if moonshine is installed
+  if [ ! -f "$MOONSHINE_DIR/.installed" ]; then
+    notify-send -t 3000 "Voice Input" "Run first: nix-shell ~/.local/share/moonshine/shell.nix"
+    exit 1
+  fi
+
+  # Create lock and save mode, clear stop signal
+  touch "$LOCK_FILE"
+  echo "$MODE" > "$MODE_FILE"
+  rm -f "$STOP_FILE" "$AUDIO_FILE"
+
+  notify-send -t 1000 "Voice Input" "Recording... (press again to stop)"
+
+  # Start recording in background - polls for stop file
+  NIX_SHELL_RUN=1 nix-shell "$SCRIPT_DIR/shell.nix" --run "python3 '$SCRIPT_DIR/record.py'" &
+fi

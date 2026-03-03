@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Voice-to-text using Moonshine
+# Usage: moonshine-voice [seconds]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DURATION="${1:-5}"
+MOONSHINE_DIR="$HOME/.local/share/moonshine-pkgs"
+
+# Check if moonshine is installed
+if [ ! -f "$MOONSHINE_DIR/.installed" ]; then
+  echo "Moonshine not installed. Run: nix-shell ~/.local/share/moonshine/shell.nix" >&2
+  exit 1
+fi
+
+echo "Recording for ${DURATION}s... (speak now)" >&2
+
+# Run transcription using nix-shell for dependencies
+NIX_SHELL_RUN=1 nix-shell "$SCRIPT_DIR/shell.nix" --run "python3 '$SCRIPT_DIR/transcribe.py' '$DURATION'"
