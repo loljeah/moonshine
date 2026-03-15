@@ -36,6 +36,10 @@ def read_config(key, default=None):
 
 DEVICE = read_config("DEVICE")
 
+# Tell PipeWire this is a capture-only stream — prevents output rerouting
+os.environ.setdefault("PIPEWIRE_NODE", "")
+os.environ["PIPEWIRE_PROPS"] = "media.role=Production"
+
 audio_chunks = []
 running = True
 

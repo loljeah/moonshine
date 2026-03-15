@@ -71,6 +71,15 @@ if [ -f "$LOCK_FILE" ]; then
         rm -f "$PID_FILE"
     fi
 
+    # Restore default audio sink if it was saved
+    if [ -f "$STATE_DIR/sink.saved" ]; then
+        SAVED_SINK=$(cat "$STATE_DIR/sink.saved")
+        if [ -n "$SAVED_SINK" ]; then
+            wpctl set-default "$SAVED_SINK" 2>/dev/null || true
+        fi
+        rm -f "$STATE_DIR/sink.saved"
+    fi
+
     # Extra wait for file write
     sleep 0.2
 
@@ -122,6 +131,9 @@ else
 
     # Clean up old files
     rm -f "$AUDIO_FILE" "$LOCK_FILE"
+
+    # Save current default audio sink so we can restore it after recording
+    wpctl status 2>/dev/null | awk '/Sinks:/{s=1} s && /\*/{gsub(/[^0-9]/," "); print $1; exit}' > "$STATE_DIR/sink.saved" 2>/dev/null || true
 
     # Create lock and save mode
     touch "$LOCK_FILE"
