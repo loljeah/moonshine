@@ -17,7 +17,27 @@ echo "── Moonshine Voice-to-Text ──────────────�
 # Create directories
 mkdir -p ~/.local/share/moonshine
 mkdir -p ~/.local/share/moonshine/sounds
+mkdir -p ~/.config/moonshine
 mkdir -p /tmp/moonshine
+
+# Create default config if it doesn't exist
+if [ ! -f ~/.config/moonshine/config ]; then
+    cat > ~/.config/moonshine/config << 'CONF'
+# Moonshine Voice-to-Text Configuration
+#
+# DEVICE - Audio input device
+#   Leave empty for system default.
+#   Use device name (e.g. alsa_input.usb-Blue_Microphones...)
+#   or device index number (run: python3 -c "import sounddevice; print(sounddevice.query_devices())")
+DEVICE=
+
+# LANGUAGE - Transcription language (default: en)
+LANGUAGE=en
+CONF
+    ok "config -> ~/.config/moonshine/config"
+else
+    ok "config exists (kept)"
+fi
 
 # Deploy core files
 cp shell.nix ~/.local/share/moonshine/ && ok "shell.nix"

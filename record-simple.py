@@ -14,6 +14,27 @@ import time
 AUDIO_FILE = "/tmp/moonshine/audio.raw"
 LOCK_FILE = "/tmp/moonshine/recording.lock"
 SAMPLE_RATE = 16000
+CONFIG_FILE = os.path.expanduser("~/.config/moonshine/config")
+
+def read_config(key, default=None):
+    """Read a key=value from the config file."""
+    if not os.path.exists(CONFIG_FILE):
+        return default
+    try:
+        with open(CONFIG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() == key:
+                        return v.strip() or default
+    except Exception:
+        pass
+    return default
+
+DEVICE = read_config("DEVICE")
 
 audio_chunks = []
 running = True
@@ -31,7 +52,15 @@ signal.signal(signal.SIGTERM, handle_signal)
 signal.signal(signal.SIGINT, handle_signal)
 
 try:
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=audio_callback):
+    # Resolve device: integer index, string name, or None for default
+    device = None
+    if DEVICE is not None:
+        try:
+            device = int(DEVICE)
+        except ValueError:
+            device = DEVICE
+
+    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=audio_callback, device=device):
         while running and os.path.exists(LOCK_FILE):
             time.sleep(0.05)
 except Exception as e:

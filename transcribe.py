@@ -9,6 +9,25 @@ import sys
 import os
 
 AUDIO_FILE = "/tmp/moonshine/audio.raw"
+CONFIG_FILE = os.path.expanduser("~/.config/moonshine/config")
+
+def read_config(key, default=None):
+    """Read a key=value from the config file."""
+    if not os.path.exists(CONFIG_FILE):
+        return default
+    try:
+        with open(CONFIG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k.strip() == key:
+                        return v.strip() or default
+    except Exception:
+        pass
+    return default
 
 def main():
     if not os.path.exists(AUDIO_FILE):
@@ -27,7 +46,8 @@ def main():
         from moonshine_voice import get_model_for_language
         from moonshine_voice.transcriber import Transcriber
 
-        model_path, model_arch = get_model_for_language("en")
+        language = read_config("LANGUAGE", "en")
+        model_path, model_arch = get_model_for_language(language)
         transcriber = Transcriber(str(model_path), model_arch)
         result = transcriber.transcribe_without_streaming(audio.tolist(), 16000)
 
