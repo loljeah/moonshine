@@ -91,6 +91,42 @@ func historyPath() string {
 	return filepath.Join(os.Getenv("HOME"), ".local", "share", "moonshine", "history.log")
 }
 
+// expandVoiceCommands replaces voice commands with their character equivalents.
+// Case-insensitive matching.
+func expandVoiceCommands(text string) string {
+	// Order matters — longer phrases first to avoid partial matches
+	replacements := []struct {
+		phrase string
+		char   string
+	}{
+		{"new paragraph", "\n\n"},
+		{"newparagraph", "\n\n"},
+		{"new line", "\n"},
+		{"newline", "\n"},
+		{"enter", "\n"},
+		{"tab", "\t"},
+	}
+
+	result := text
+
+	for _, r := range replacements {
+		// Find all occurrences (case-insensitive)
+		idx := 0
+		for {
+			pos := strings.Index(strings.ToLower(result[idx:]), r.phrase)
+			if pos < 0 {
+				break
+			}
+			pos += idx
+			// Replace preserving position
+			result = result[:pos] + r.char + result[pos+len(r.phrase):]
+			idx = pos + len(r.char)
+		}
+	}
+
+	return result
+}
+
 // logTranscription appends a timestamped transcription to the history file.
 func logTranscription(mode OutputMode, text string) {
 	path := historyPath()
@@ -497,13 +533,14 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 			}
 
 			if line.IsComplete && line.Text != "" {
+				text := expandVoiceCommands(line.Text)
 				if d.verbose {
-					log.Printf("free-speech: %q", line.Text)
+					log.Printf("free-speech: %q -> %q", line.Text, text)
 				}
 
 				// Log and type text into focused window
 				logTranscription(ModeFreeSpeech, line.Text)
-				if err := TypeText(line.Text); err != nil {
+				if err := TypeText(text); err != nil {
 					if d.verbose {
 						log.Printf("free-speech type: %s", err)
 					}
