@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+#
+# Simple continuous recorder — records until lock file is removed.
+# Saves audio as raw float32 PCM at 16kHz mono.
+# Uses pw-record for reliable PipeWire device targeting.
+#
+
+set -euo pipefail
+
+AUDIO_FILE="/tmp/moonshine/audio.raw"
+LOCK_FILE="/tmp/moonshine/recording.lock"
+TMP_WAV="/tmp/moonshine/audio_tmp.wav"
+SAMPLE_RATE=16000
+CONFIG_FILE="$HOME/.config/moonshine/config"
+
+# --- Config reader ---
+read_config() {
+    local key="$1" default="${2:-}"
+    if [ -f "$CONFIG_FILE" ]; then
+        local val
+        val=$(grep -E "^${key}=" "$CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2- | xargs)
+        [ -n "$val" ] && echo "$val" && return
+    fi
+    echo "$default"
+}
+
+# --- Find PipeWire source by substring match ---
+find_pw_source() {
+    local search="$1"
+    [ -z "$search" ] && return 1
+
+    local search_lower
+    search_lower=$(echo "$search" | tr '[:upper:]' '[:lower:]')
+
+    # Parse pw-cli output into node blocks, only match Audio/Source nodes
+    local node_name
+    node_name=$(pw-cli list-objects Node 2>/dev/null | awk '
+        BEGIN { name=""; desc=""; cls="" }
+        /^\tid/ || /^id / {
+            # Emit previous block if it was a source
+            if (cls == "Audio/Source" && name != "") print name "|" desc
+            name=""; desc=""; cls=""
+        }
+        /media.class/ {
+            sub(/.*= *"?/, ""); sub(/".*/, ""); cls=$0
+        }
+        /node.name/ {
+            sub(/.*= *"?/, ""); sub(/".*/, ""); name=$0
+        }
+        /node.description/ {
+            sub(/.*= *"?/, ""); sub(/".*/, ""); desc=$0
+        }
+        END {
+            if (cls == "Audio/Source" && name != "") print name "|" desc
+        }
+    ' | while IFS='|' read -r nname ndesc; do
+        nname_lower=$(echo "$nname" | tr '[:upper:]' '[:lower:]')
+        ndesc_lower=$(echo "$ndesc" | tr '[:upper:]' '[:lower:]')
+        if [[ "$nname_lower" == *"$search_lower"* ]] || [[ "$ndesc_lower" == *"$search_lower"* ]]; then
+            echo "$nname"
+            break
+        fi
+    done)
+
+    [ -n "$node_name" ] && echo "$node_name" && return 0
+    return 1
+}
+
+# --- Main ---
+
+DEVICE=$(read_config "DEVICE" "")
+TARGET=""
+
+if [ -n "$DEVICE" ]; then
+    TARGET=$(find_pw_source "$DEVICE") || true
+    if [ -n "$TARGET" ]; then
+        echo "Matched device '$DEVICE' -> $TARGET" >&2
+    else
+        echo "Device '$DEVICE' not found in PipeWire sources, using default" >&2
+    fi
+fi
+
+# Build pw-record command
+CMD=(pw-record --rate "$SAMPLE_RATE" --channels 1 --format f32)
+[ -n "$TARGET" ] && CMD+=(--target "$TARGET")
+CMD+=("$TMP_WAV")
+
+# Clean up old files
+rm -f "$AUDIO_FILE" "$TMP_WAV"
+
+# Start pw-record in background
+"${CMD[@]}" 2>/dev/null &
+PW_PID=$!
+
+# Wait until lock file is removed
+while [ -f "$LOCK_FILE" ]; do
+    # Check pw-record is still alive
+    if ! kill -0 "$PW_PID" 2>/dev/null; then
+        echo "pw-record exited unexpectedly" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+
+# Stop pw-record and wait for file flush
+kill -INT "$PW_PID" 2>/dev/null || true
+wait "$PW_PID" 2>/dev/null || true
+sleep 0.3
+
+# Extract raw PCM from WAV — skip header to 'data' chunk
+# pw-record f32 WAV has a 80-byte header (RIFF + fmt + data chunk header)
+if [ -f "$TMP_WAV" ] && [ -s "$TMP_WAV" ]; then
+    # Find 'data' marker offset, extract PCM after the 8-byte chunk header
+    OFFSET=$(grep -boa 'data' "$TMP_WAV" | head -1 | cut -d: -f1)
+    if [ -n "$OFFSET" ]; then
+        SKIP=$((OFFSET + 8))
+        tail -c +$((SKIP + 1)) "$TMP_WAV" > "$AUDIO_FILE"
+    fi
+    rm -f "$TMP_WAV"
+else
+    echo "No audio captured" >&2
+fi

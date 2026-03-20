@@ -12,6 +12,12 @@
 
 set -euo pipefail
 
+# === DEBUG LOG ===
+exec 2>>/tmp/moonshine/voice-toggle.log
+echo "--- $(date) --- mode=${1:-clipboard} ---" >&2
+echo "PATH=$PATH" >&2
+echo "HOME=$HOME" >&2
+
 # === CONFIG ===
 MODE="${1:-clipboard}"
 MOONSHINE_DIR="$HOME/.local/share/moonshine"
@@ -61,10 +67,10 @@ if [ -f "$LOCK_FILE" ]; then
     # Remove lock file to signal recording to stop
     rm -f "$LOCK_FILE"
 
-    # Wait for recording process to finish and write file
+    # Wait for recording process to finish (includes WAV conversion)
     if [ -f "$PID_FILE" ]; then
         REC_PID=$(cat "$PID_FILE")
-        for i in {1..30}; do
+        for i in {1..100}; do
             kill -0 "$REC_PID" 2>/dev/null || break
             sleep 0.1
         done
@@ -79,9 +85,6 @@ if [ -f "$LOCK_FILE" ]; then
         fi
         rm -f "$STATE_DIR/sink.saved"
     fi
-
-    # Extra wait for file write
-    sleep 0.2
 
     if [ ! -f "$AUDIO_FILE" ] || [ ! -s "$AUDIO_FILE" ]; then
         echo "idle" > "$STATE_DIR/status"
@@ -146,7 +149,7 @@ else
     play_sound "$SOUND_START"
     notify "🎙️ Recording" "Press again to stop" 1500
 
-    # Start recording in background
-    nix-shell "$MOONSHINE_DIR/shell.nix" --run "python3 '$MOONSHINE_DIR/record-simple.py'" &
+    # Start recording in background (bash script, no nix-shell needed)
+    "$MOONSHINE_DIR/record-simple" &
     echo $! > "$PID_FILE"
 fi

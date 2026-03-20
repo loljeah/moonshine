@@ -27,8 +27,8 @@ if [ ! -f ~/.config/moonshine/config ]; then
 #
 # DEVICE - Audio input device
 #   Leave empty for system default.
-#   Use device name (e.g. alsa_input.usb-Blue_Microphones...)
-#   or device index number (run: python3 -c "import sounddevice; print(sounddevice.query_devices())")
+#   Use PipeWire node name or a substring to match (e.g. "PRO X" for headset)
+#   List sources: pw-cli list-objects Node | grep -A2 "Audio/Source"
 DEVICE=
 
 # LANGUAGE - Transcription language (default: en)
@@ -42,7 +42,7 @@ fi
 # Deploy core files
 cp shell.nix ~/.local/share/moonshine/ && ok "shell.nix"
 cp transcribe.py ~/.local/share/moonshine/ && ok "transcribe.py"
-cp record-simple.py ~/.local/share/moonshine/ && ok "record-simple.py"
+cp record-simple ~/.local/share/moonshine/ && ok "record-simple"
 cp voice-toggle ~/.local/share/moonshine/ && ok "voice-toggle"
 
 # Legacy scripts
@@ -58,7 +58,7 @@ cp waybar-moonshine ~/.local/bin/ && ok "waybar-moonshine -> ~/.local/bin/"
 chmod +x ~/.local/bin/waybar-moonshine
 chmod +x ~/.local/share/moonshine/voice-toggle
 chmod +x ~/.local/share/moonshine/transcribe.py
-chmod +x ~/.local/share/moonshine/record-simple.py
+chmod +x ~/.local/share/moonshine/record-simple
 chmod +x ~/.local/share/moonshine/moonshine-voice 2>/dev/null
 chmod +x ~/.local/share/moonshine/voice-type 2>/dev/null
 chmod +x ~/.local/share/moonshine/voice-record 2>/dev/null

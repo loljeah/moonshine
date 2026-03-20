@@ -42,6 +42,11 @@ def main():
     if len(audio) < 1600:
         return
 
+    # Normalize audio amplitude
+    max_val = np.max(np.abs(audio))
+    if max_val > 0:
+        audio = audio / max_val * 0.95
+
     try:
         from moonshine_voice import get_model_for_language
         from moonshine_voice.transcriber import Transcriber
