@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -17,9 +18,11 @@ import (
 type State int
 
 const (
-	StateIdle       State = iota
+	StateIdle           State = iota
 	StateRecording
 	StateProcessing
+	StateListening      // Free Speech: mic open, waiting for speech
+	StateSpeechDetected // Free Speech: speech detected, transcribing
 )
 
 func (s State) String() string {
@@ -30,6 +33,10 @@ func (s State) String() string {
 		return "recording"
 	case StateProcessing:
 		return "processing"
+	case StateListening:
+		return "listening"
+	case StateSpeechDetected:
+		return "speech"
 	default:
 		return "unknown"
 	}
@@ -39,23 +46,32 @@ func (s State) String() string {
 type OutputMode int
 
 const (
-	ModeClipboard OutputMode = iota
+	ModeClipboard   OutputMode = iota
 	ModeType
+	ModeFreeSpeech
 )
 
 func (m OutputMode) String() string {
-	if m == ModeType {
+	switch m {
+	case ModeType:
 		return "type"
+	case ModeFreeSpeech:
+		return "free-speech"
+	default:
+		return "clipboard"
 	}
-	return "clipboard"
 }
 
 // ParseOutputMode converts a string to OutputMode.
 func ParseOutputMode(s string) OutputMode {
-	if s == "type" {
+	switch s {
+	case "type":
 		return ModeType
+	case "free-speech":
+		return ModeFreeSpeech
+	default:
+		return ModeClipboard
 	}
-	return ModeClipboard
 }
 
 // StateChange is sent to listeners (e.g. the tray) when state changes.
@@ -79,6 +95,12 @@ type Daemon struct {
 	cfg         *config.Config
 	soundDir    string
 	verbose     bool
+
+	// Free Speech mode
+	streamRecorder *audio.StreamRecorder
+	stream         *moonshine.Stream
+	listenCancel   context.CancelFunc
+	listening      bool
 
 	// StateCh broadcasts state changes (buffered, non-blocking send).
 	StateCh chan StateChange
@@ -115,14 +137,29 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 	return d
 }
 
-// Toggle starts or stops recording. Returns transcribed text on stop, or
-// "recording" if recording just started.
-func (d *Daemon) Toggle(mode OutputMode) (string, error) {
+// Toggle starts or stops recording using the daemon's current output mode
+// (set via SetMode or tray menu). Returns transcribed text on stop, or
+// "recording" if recording just started. In Free Speech mode, toggles
+// listening on/off.
+func (d *Daemon) Toggle() (string, error) {
 	d.mu.Lock()
+
+	// Free Speech mode: toggle listening
+	if d.mode == ModeFreeSpeech {
+		if d.listening {
+			d.mu.Unlock()
+			d.StopListening()
+			return "stopped", nil
+		}
+		d.mu.Unlock()
+		if err := d.StartListening(); err != nil {
+			return "", err
+		}
+		return "listening", nil
+	}
 
 	switch d.state {
 	case StateIdle:
-		d.mode = mode
 		d.state = StateRecording
 		d.writeStatus()
 		d.notify(StateRecording)
@@ -265,11 +302,23 @@ func (d *Daemon) GetMode() OutputMode {
 	return d.mode
 }
 
-// SetMode changes the output mode.
+// SetMode changes the output mode and notifies listeners (tray).
+// Stops listening if leaving Free Speech mode.
 func (d *Daemon) SetMode(m OutputMode) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	oldMode := d.mode
 	d.mode = m
+	d.mu.Unlock()
+
+	// Stop listening if leaving Free Speech mode
+	if oldMode == ModeFreeSpeech && m != ModeFreeSpeech {
+		d.StopListening()
+	}
+
+	d.mu.Lock()
+	state := d.state
+	d.mu.Unlock()
+	d.notify(state)
 }
 
 func (d *Daemon) writeStatus() {
@@ -296,8 +345,161 @@ func (d *Daemon) GetCurrentDeviceTarget() string {
 	return d.recorder.GetTarget()
 }
 
+// StartListening begins the free-speech streaming loop.
+func (d *Daemon) StartListening() error {
+	d.mu.Lock()
+	if d.listening {
+		d.mu.Unlock()
+		return nil
+	}
+
+	target := d.recorder.GetTarget()
+	d.streamRecorder = audio.NewStreamRecorder(target)
+	d.mu.Unlock()
+
+	if err := d.streamRecorder.Start(); err != nil {
+		return fmt.Errorf("start stream recorder: %w", err)
+	}
+
+	stream, err := d.transcriber.CreateStream()
+	if err != nil {
+		d.streamRecorder.Stop()
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	if err := stream.Start(); err != nil {
+		stream.Close()
+		d.streamRecorder.Stop()
+		return fmt.Errorf("start stream: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	d.mu.Lock()
+	d.stream = stream
+	d.listenCancel = cancel
+	d.listening = true
+	d.state = StateListening
+	d.writeStatus()
+	d.notify(StateListening)
+	d.mu.Unlock()
+
+	go d.streamingLoop(ctx)
+	return nil
+}
+
+// StopListening stops the free-speech streaming loop.
+func (d *Daemon) StopListening() {
+	d.mu.Lock()
+	if !d.listening {
+		d.mu.Unlock()
+		return
+	}
+
+	d.listening = false
+	if d.listenCancel != nil {
+		d.listenCancel()
+		d.listenCancel = nil
+	}
+	d.mu.Unlock()
+
+	// Stop recorder (unblocks ReadChunk)
+	d.mu.Lock()
+	sr := d.streamRecorder
+	stream := d.stream
+	d.streamRecorder = nil
+	d.stream = nil
+	d.mu.Unlock()
+
+	if sr != nil {
+		sr.Stop()
+	}
+	if stream != nil {
+		stream.Stop()
+		stream.Close()
+	}
+
+	d.mu.Lock()
+	d.state = StateIdle
+	d.writeStatus()
+	d.notify(StateIdle)
+	d.mu.Unlock()
+}
+
+// streamingLoop continuously reads audio and feeds it to the streaming transcriber.
+func (d *Daemon) streamingLoop(ctx context.Context) {
+	const chunkSize = 4800 // 300ms at 16kHz
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		d.mu.Lock()
+		sr := d.streamRecorder
+		stream := d.stream
+		d.mu.Unlock()
+
+		if sr == nil || stream == nil {
+			return
+		}
+
+		chunk, err := sr.ReadChunk(chunkSize)
+		if err != nil {
+			// Recorder was stopped or pipe broken
+			if d.verbose {
+				log.Printf("streaming read: %s", err)
+			}
+			return
+		}
+
+		lines, err := stream.AddAudio(chunk, audio.SampleRate)
+		if err != nil {
+			if d.verbose {
+				log.Printf("streaming transcribe: %s", err)
+			}
+			continue
+		}
+
+		for _, line := range lines {
+			if line.IsNew {
+				d.mu.Lock()
+				if d.state != StateSpeechDetected {
+					d.state = StateSpeechDetected
+					d.writeStatus()
+					d.notify(StateSpeechDetected)
+				}
+				d.mu.Unlock()
+			}
+
+			if line.IsComplete && line.Text != "" {
+				if d.verbose {
+					log.Printf("free-speech: %q", line.Text)
+				}
+
+				// Type text into focused window
+				if err := TypeText(line.Text); err != nil {
+					if d.verbose {
+						log.Printf("free-speech type: %s", err)
+					}
+				}
+
+				// Return to listening state
+				d.mu.Lock()
+				d.state = StateListening
+				d.writeStatus()
+				d.notify(StateListening)
+				d.mu.Unlock()
+			}
+		}
+	}
+}
+
 // Close cleans up the daemon.
 func (d *Daemon) Close() {
+	d.StopListening()
 	d.transcriber.Close()
 	os.Remove(filepath.Join(stateDir, "status"))
 }

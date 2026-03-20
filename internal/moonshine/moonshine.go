@@ -65,6 +65,26 @@ extern int32_t moonshine_transcribe_without_streaming(
 	uint32_t flags,
 	transcript_t **out_transcript
 );
+
+// Streaming API
+extern int32_t moonshine_create_stream(int32_t transcriber_handle, uint32_t flags);
+extern int32_t moonshine_start_stream(int32_t transcriber_handle, int32_t stream_handle);
+extern int32_t moonshine_stop_stream(int32_t transcriber_handle, int32_t stream_handle);
+extern int32_t moonshine_transcribe_add_audio_to_stream(
+	int32_t transcriber_handle,
+	int32_t stream_handle,
+	float *audio_data,
+	uint64_t audio_length,
+	int32_t sample_rate,
+	uint32_t flags
+);
+extern int32_t moonshine_transcribe_stream(
+	int32_t transcriber_handle,
+	int32_t stream_handle,
+	uint32_t flags,
+	transcript_t **out_transcript
+);
+extern void moonshine_free_stream(int32_t transcriber_handle, int32_t stream_handle);
 */
 import "C"
 
@@ -114,23 +134,22 @@ type TranscriptLine struct {
 	Duration  float32
 }
 
+// StreamTranscriptLine extends TranscriptLine with streaming flags.
+type StreamTranscriptLine struct {
+	Text           string
+	StartTime      float32
+	Duration       float32
+	IsComplete     bool
+	IsNew          bool
+	HasTextChanged bool
+}
+
 // Transcriber wraps the Moonshine C library. All C calls are serialized
 // through a single goroutine to ensure thread safety.
 type Transcriber struct {
 	handle C.int32_t
-	reqCh  chan request
+	funcCh chan func()
 	done   chan struct{}
-}
-
-type request struct {
-	pcm        []float32
-	sampleRate int
-	result     chan transcribeResult
-}
-
-type transcribeResult struct {
-	lines []TranscriptLine
-	err   error
 }
 
 // NewTranscriber loads a model from the given path with the specified architecture.
@@ -153,7 +172,7 @@ func NewTranscriber(modelPath string, arch ModelArch) (*Transcriber, error) {
 
 	t := &Transcriber{
 		handle: handle,
-		reqCh:  make(chan request),
+		funcCh: make(chan func()),
 		done:   make(chan struct{}),
 	}
 
@@ -165,9 +184,8 @@ func NewTranscriber(modelPath string, arch ModelArch) (*Transcriber, error) {
 
 func (t *Transcriber) run() {
 	defer close(t.done)
-	for req := range t.reqCh {
-		lines, err := t.doTranscribe(req.pcm, req.sampleRate)
-		req.result <- transcribeResult{lines: lines, err: err}
+	for fn := range t.funcCh {
+		fn()
 	}
 }
 
@@ -192,12 +210,17 @@ func (t *Transcriber) doTranscribe(pcm []float32, sampleRate int) ([]TranscriptL
 		return nil, fmt.Errorf("transcription failed: %s", C.GoString(errStr))
 	}
 
-	if outTranscript == nil || outTranscript.line_count == 0 {
-		return nil, nil
+	return parseTranscript(outTranscript), nil
+}
+
+// parseTranscript converts a C transcript_t to Go TranscriptLines.
+func parseTranscript(t *C.transcript_t) []TranscriptLine {
+	if t == nil || t.line_count == 0 {
+		return nil
 	}
 
-	count := int(outTranscript.line_count)
-	cLines := unsafe.Slice(outTranscript.lines, count)
+	count := int(t.line_count)
+	cLines := unsafe.Slice(t.lines, count)
 
 	lines := make([]TranscriptLine, 0, count)
 	for _, cl := range cLines {
@@ -213,20 +236,170 @@ func (t *Transcriber) doTranscribe(pcm []float32, sampleRate int) ([]TranscriptL
 		})
 	}
 
-	return lines, nil
+	return lines
+}
+
+// parseStreamTranscript converts a C transcript_t to StreamTranscriptLines.
+func parseStreamTranscript(t *C.transcript_t) []StreamTranscriptLine {
+	if t == nil || t.line_count == 0 {
+		return nil
+	}
+
+	count := int(t.line_count)
+	cLines := unsafe.Slice(t.lines, count)
+
+	lines := make([]StreamTranscriptLine, 0, count)
+	for _, cl := range cLines {
+		text := C.GoString(cl.text)
+		text = strings.TrimSpace(text)
+		lines = append(lines, StreamTranscriptLine{
+			Text:           text,
+			StartTime:      float32(cl.start_time),
+			Duration:       float32(cl.duration),
+			IsComplete:     cl.is_complete != 0,
+			IsNew:          cl.is_new != 0,
+			HasTextChanged: cl.has_text_changed != 0,
+		})
+	}
+
+	return lines
 }
 
 // Transcribe sends audio PCM data for transcription. Thread-safe.
 func (t *Transcriber) Transcribe(pcm []float32, sampleRate int) ([]TranscriptLine, error) {
-	result := make(chan transcribeResult, 1)
-	t.reqCh <- request{pcm: pcm, sampleRate: sampleRate, result: result}
-	r := <-result
+	type result struct {
+		lines []TranscriptLine
+		err   error
+	}
+	ch := make(chan result, 1)
+	t.funcCh <- func() {
+		lines, err := t.doTranscribe(pcm, sampleRate)
+		ch <- result{lines, err}
+	}
+	r := <-ch
+	return r.lines, r.err
+}
+
+// Stream wraps a Moonshine streaming session. All methods are thread-safe
+// (they dispatch to the Transcriber's single C goroutine).
+type Stream struct {
+	t      *Transcriber
+	handle C.int32_t
+}
+
+// CreateStream creates a new streaming transcription session.
+func (t *Transcriber) CreateStream() (*Stream, error) {
+	type result struct {
+		handle C.int32_t
+		err    error
+	}
+	ch := make(chan result, 1)
+	t.funcCh <- func() {
+		h := C.moonshine_create_stream(t.handle, 0)
+		if h < 0 {
+			errStr := C.moonshine_error_to_string(h)
+			ch <- result{err: fmt.Errorf("create stream: %s", C.GoString(errStr))}
+		} else {
+			ch <- result{handle: h}
+		}
+	}
+	r := <-ch
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &Stream{t: t, handle: r.handle}, nil
+}
+
+// Start begins the streaming session.
+func (s *Stream) Start() error {
+	ch := make(chan error, 1)
+	s.t.funcCh <- func() {
+		rc := C.moonshine_start_stream(s.t.handle, s.handle)
+		if rc < 0 {
+			errStr := C.moonshine_error_to_string(rc)
+			ch <- fmt.Errorf("start stream: %s", C.GoString(errStr))
+		} else {
+			ch <- nil
+		}
+	}
+	return <-ch
+}
+
+// Stop ends the streaming session (can be restarted).
+func (s *Stream) Stop() error {
+	ch := make(chan error, 1)
+	s.t.funcCh <- func() {
+		rc := C.moonshine_stop_stream(s.t.handle, s.handle)
+		if rc < 0 {
+			errStr := C.moonshine_error_to_string(rc)
+			ch <- fmt.Errorf("stop stream: %s", C.GoString(errStr))
+		} else {
+			ch <- nil
+		}
+	}
+	return <-ch
+}
+
+// Close frees the stream. Must not be used after Close.
+func (s *Stream) Close() {
+	done := make(chan struct{}, 1)
+	s.t.funcCh <- func() {
+		C.moonshine_free_stream(s.t.handle, s.handle)
+		done <- struct{}{}
+	}
+	<-done
+}
+
+// AddAudio feeds PCM audio to the stream and returns updated transcript lines.
+func (s *Stream) AddAudio(pcm []float32, sampleRate int) ([]StreamTranscriptLine, error) {
+	if len(pcm) == 0 {
+		return nil, nil
+	}
+
+	type result struct {
+		lines []StreamTranscriptLine
+		err   error
+	}
+	ch := make(chan result, 1)
+	s.t.funcCh <- func() {
+		// Add audio to stream
+		rc := C.moonshine_transcribe_add_audio_to_stream(
+			s.t.handle,
+			s.handle,
+			(*C.float)(unsafe.Pointer(&pcm[0])),
+			C.uint64_t(len(pcm)),
+			C.int32_t(sampleRate),
+			0,
+		)
+		if rc < 0 {
+			errStr := C.moonshine_error_to_string(rc)
+			ch <- result{err: fmt.Errorf("add audio: %s", C.GoString(errStr))}
+			return
+		}
+
+		// Get transcript
+		var outTranscript *C.transcript_t
+		rc = C.moonshine_transcribe_stream(
+			s.t.handle,
+			s.handle,
+			0,
+			&outTranscript,
+		)
+		if rc < 0 {
+			errStr := C.moonshine_error_to_string(rc)
+			ch <- result{err: fmt.Errorf("transcribe stream: %s", C.GoString(errStr))}
+			return
+		}
+
+		ch <- result{lines: parseStreamTranscript(outTranscript)}
+	}
+	r := <-ch
 	return r.lines, r.err
 }
 
 // Close frees the transcriber resources.
 func (t *Transcriber) Close() {
-	close(t.reqCh)
+	close(t.funcCh)
 	<-t.done // wait for goroutine to exit
 	C.moonshine_free_transcriber(t.handle)
 }

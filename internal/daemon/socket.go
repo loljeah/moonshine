@@ -75,11 +75,10 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 
 	switch cmd {
 	case "toggle":
-		mode := ModeClipboard
 		if len(args) > 0 {
-			mode = ParseOutputMode(args[0])
+			s.daemon.SetMode(ParseOutputMode(args[0]))
 		}
-		text, err := s.daemon.Toggle(mode)
+		text, err := s.daemon.Toggle()
 		if err != nil {
 			fmt.Fprintf(conn, "ERR %s\n", err)
 		} else {
@@ -122,6 +121,25 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 			lines = append(lines, d.Description+" ("+d.NodeName+")")
 		}
 		fmt.Fprintf(conn, "OK %s\n", strings.Join(lines, "\n"))
+
+	case "listen":
+		if len(args) == 0 {
+			fmt.Fprintln(conn, "ERR listen start|stop required")
+			return
+		}
+		switch args[0] {
+		case "start":
+			if err := s.daemon.StartListening(); err != nil {
+				fmt.Fprintf(conn, "ERR %s\n", err)
+			} else {
+				fmt.Fprintln(conn, "OK listening")
+			}
+		case "stop":
+			s.daemon.StopListening()
+			fmt.Fprintln(conn, "OK stopped")
+		default:
+			fmt.Fprintf(conn, "ERR listen start|stop, got %s\n", args[0])
+		}
 
 	case "quit":
 		fmt.Fprintln(conn, "OK")

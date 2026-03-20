@@ -12,11 +12,12 @@ type Tray struct {
 	verbose bool
 
 	// Menu items we need to update
-	mStatus     *systray.MenuItem
-	mClipboard  *systray.MenuItem
-	mType       *systray.MenuItem
-	mDevices    []*systray.MenuItem
-	mDeviceSub  *systray.MenuItem
+	mStatus      *systray.MenuItem
+	mClipboard   *systray.MenuItem
+	mType        *systray.MenuItem
+	mFreeSpeech  *systray.MenuItem
+	mDevices     []*systray.MenuItem
+	mDeviceSub   *systray.MenuItem
 }
 
 // Run starts the system tray. Blocks until quit is selected.
@@ -28,20 +29,19 @@ func Run(d *daemon.Daemon, verbose bool) {
 
 func (t *Tray) onReady() {
 	systray.SetIcon(IconIdle)
-	systray.SetTitle("Moonshine")
-	systray.SetTooltip("Moonshine Voice-to-Text")
+	systray.SetTitle("")
+	systray.SetTooltip("Moonshine — Clipboard")
 
 	// Status (disabled, display-only)
-	t.mStatus = systray.AddMenuItem("Status: Idle", "Current state")
+	t.mStatus = systray.AddMenuItem("Idle — Clipboard", "Current state and mode")
 	t.mStatus.Disable()
 
 	systray.AddSeparator()
 
-	// Output mode radio group
-	mOutputMode := systray.AddMenuItem("Output Mode", "")
-	mOutputMode.Disable()
-	t.mClipboard = mOutputMode.AddSubMenuItem("Clipboard", "Copy to clipboard")
-	t.mType = mOutputMode.AddSubMenuItem("Type", "Type into focused window")
+	// Output mode — top-level radio items
+	t.mClipboard = systray.AddMenuItem("Clipboard", "Copy transcription to clipboard")
+	t.mType = systray.AddMenuItem("Type", "Type transcription into focused window")
+	t.mFreeSpeech = systray.AddMenuItem("Free Speech", "Always-on listening, auto-type speech")
 	t.mClipboard.Check()
 
 	systray.AddSeparator()
@@ -65,13 +65,16 @@ func (t *Tray) menuLoop(mRefresh, mQuit *systray.MenuItem) {
 		select {
 		case <-t.mClipboard.ClickedCh:
 			t.d.SetMode(daemon.ModeClipboard)
-			t.mClipboard.Check()
-			t.mType.Uncheck()
+			t.syncModeChecks(daemon.ModeClipboard)
 
 		case <-t.mType.ClickedCh:
 			t.d.SetMode(daemon.ModeType)
-			t.mType.Check()
-			t.mClipboard.Uncheck()
+			t.syncModeChecks(daemon.ModeType)
+
+		case <-t.mFreeSpeech.ClickedCh:
+			t.d.SetMode(daemon.ModeFreeSpeech)
+			t.syncModeChecks(daemon.ModeFreeSpeech)
+			t.d.StartListening()
 
 		case <-mRefresh.ClickedCh:
 			t.refreshDevices()
@@ -80,6 +83,20 @@ func (t *Tray) menuLoop(mRefresh, mQuit *systray.MenuItem) {
 			systray.Quit()
 			return
 		}
+	}
+}
+
+func (t *Tray) syncModeChecks(m daemon.OutputMode) {
+	t.mClipboard.Uncheck()
+	t.mType.Uncheck()
+	t.mFreeSpeech.Uncheck()
+	switch m {
+	case daemon.ModeClipboard:
+		t.mClipboard.Check()
+	case daemon.ModeType:
+		t.mType.Check()
+	case daemon.ModeFreeSpeech:
+		t.mFreeSpeech.Check()
 	}
 }
 
@@ -127,17 +144,48 @@ func (t *Tray) refreshDevices() {
 
 func (t *Tray) watchState() {
 	for sc := range t.d.StateCh {
+		// Update icon
 		switch sc.State {
 		case daemon.StateIdle:
 			systray.SetIcon(IconIdle)
-			t.mStatus.SetTitle("Status: Idle")
-		case daemon.StateRecording:
+		case daemon.StateRecording, daemon.StateSpeechDetected:
 			systray.SetIcon(IconRecording)
-			t.mStatus.SetTitle("Status: Recording")
 		case daemon.StateProcessing:
 			systray.SetIcon(IconProcessing)
-			t.mStatus.SetTitle("Status: Processing")
+		case daemon.StateListening:
+			systray.SetIcon(IconListening)
 		}
+
+		// Update status line and tooltip with state + mode
+		var modeLabel string
+		switch sc.Mode {
+		case daemon.ModeType:
+			modeLabel = "Type"
+		case daemon.ModeFreeSpeech:
+			modeLabel = "Free Speech"
+		default:
+			modeLabel = "Clipboard"
+		}
+
+		var stateLabel string
+		switch sc.State {
+		case daemon.StateIdle:
+			stateLabel = "Idle"
+		case daemon.StateRecording:
+			stateLabel = "Recording"
+		case daemon.StateProcessing:
+			stateLabel = "Processing"
+		case daemon.StateListening:
+			stateLabel = "Listening"
+		case daemon.StateSpeechDetected:
+			stateLabel = "Speech"
+		}
+
+		t.mStatus.SetTitle(stateLabel + " — " + modeLabel)
+		systray.SetTooltip("Moonshine — " + modeLabel)
+
+		// Sync radio checks with current mode
+		t.syncModeChecks(sc.Mode)
 	}
 }
 

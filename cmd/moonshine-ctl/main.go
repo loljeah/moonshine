@@ -13,7 +13,8 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: moonshine-ctl <command> [args...]")
-		fmt.Fprintln(os.Stderr, "commands: toggle [clipboard|type], status, mode [clipboard|type], device <name>, devices, quit")
+		fmt.Fprintln(os.Stderr, "commands: toggle [clipboard|type], status, mode [clipboard|type|free-speech],")
+		fmt.Fprintln(os.Stderr, "          listen start|stop, device <name>, devices, quit")
 		os.Exit(1)
 	}
 
