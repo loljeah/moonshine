@@ -13,7 +13,6 @@ type Tray struct {
 
 	// Menu items we need to update
 	mStatus      *systray.MenuItem
-	mModeSub     *systray.MenuItem
 	mClipboard   *systray.MenuItem
 	mType        *systray.MenuItem
 	mFreeSpeech  *systray.MenuItem
@@ -39,12 +38,13 @@ func (t *Tray) onReady() {
 
 	systray.AddSeparator()
 
-	// Mode submenu
-	t.mModeSub = systray.AddMenuItem("Mode", "Output mode")
-	t.mClipboard = t.mModeSub.AddSubMenuItem("Clipboard", "Copy transcription to clipboard")
-	t.mType = t.mModeSub.AddSubMenuItem("Type", "Type transcription into focused window")
-	t.mFreeSpeech = t.mModeSub.AddSubMenuItem("Free Speech", "Always-on listening, auto-type speech")
+	// Output mode — radio items
+	t.mClipboard = systray.AddMenuItem("Clipboard", "Copy transcription to clipboard")
+	t.mType = systray.AddMenuItem("Type", "Type transcription into focused window")
+	t.mFreeSpeech = systray.AddMenuItem("Free Speech", "Always-on listening, auto-type speech")
 	t.mClipboard.Check()
+
+	systray.AddSeparator()
 
 	// Device submenu
 	t.mDeviceSub = systray.AddMenuItem("Device", "Audio input device")

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"moonshine-daemon/internal/audio"
 	"moonshine-daemon/internal/config"
@@ -84,6 +85,26 @@ const (
 	stateDir  = "/tmp/moonshine"
 	soundsDir = "/home" // overridden by actual path at runtime
 )
+
+// historyPath returns the path to the transcription history file.
+func historyPath() string {
+	return filepath.Join(os.Getenv("HOME"), ".local", "share", "moonshine", "history.log")
+}
+
+// logTranscription appends a timestamped transcription to the history file.
+func logTranscription(mode OutputMode, text string) {
+	path := historyPath()
+	os.MkdirAll(filepath.Dir(path), 0o755)
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Fprintf(f, "[%s] [%s] %s\n", ts, mode, text)
+}
 
 // Daemon is the core state machine: idle -> recording -> processing -> idle.
 type Daemon struct {
@@ -244,6 +265,7 @@ func (d *Daemon) Toggle() (string, error) {
 		// Output
 		CopyToClipboard(text)
 		d.playSound("success.wav")
+		logTranscription(currentMode, text)
 
 		if currentMode == ModeType {
 			Notify("Typing...", text)
@@ -479,12 +501,17 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 					log.Printf("free-speech: %q", line.Text)
 				}
 
-				// Type text into focused window
+				// Log and type text into focused window
+				logTranscription(ModeFreeSpeech, line.Text)
 				if err := TypeText(line.Text); err != nil {
 					if d.verbose {
 						log.Printf("free-speech type: %s", err)
 					}
 				}
+
+				// Reset stream to clear completed transcript and prepare for next utterance
+				stream.Stop()
+				stream.Start()
 
 				// Return to listening state
 				d.mu.Lock()
@@ -492,6 +519,8 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 				d.writeStatus()
 				d.notify(StateListening)
 				d.mu.Unlock()
+
+				break // Exit line loop since stream was reset
 			}
 		}
 	}
