@@ -17,6 +17,7 @@ echo "── Moonshine Voice-to-Text ──────────────�
 # Create directories
 mkdir -p ~/.local/share/moonshine
 mkdir -p ~/.local/share/moonshine/sounds
+mkdir -p ~/.local/bin
 mkdir -p ~/.config/moonshine
 mkdir -p /tmp/moonshine
 
@@ -39,36 +40,47 @@ else
     ok "config exists (kept)"
 fi
 
-# Deploy core files
-cp shell.nix ~/.local/share/moonshine/ && ok "shell.nix"
-cp transcribe.py ~/.local/share/moonshine/ && ok "transcribe.py"
-cp record-simple ~/.local/share/moonshine/ && ok "record-simple"
-cp voice-toggle ~/.local/share/moonshine/ && ok "voice-toggle"
+# --- Go daemon binaries ---
+if [ -f "$SCRIPT_DIR/cmd/moonshine-daemon/main.go" ]; then
+    echo ""
+    echo "Building Go binaries..."
+    if command -v go &>/dev/null; then
+        GO_CMD="go"
+    elif [ -f "$SCRIPT_DIR/shell-go.nix" ]; then
+        GO_CMD="nix-shell $SCRIPT_DIR/shell-go.nix --run"
+        # Build inside nix-shell for cgo deps
+        nix-shell "$SCRIPT_DIR/shell-go.nix" --run "
+            cd '$SCRIPT_DIR'
+            go build -o moonshine-daemon ./cmd/moonshine-daemon && \
+            go build -o moonshine-ctl ./cmd/moonshine-ctl
+        " && {
+            cp moonshine-daemon ~/.local/bin/moonshine-daemon && ok "moonshine-daemon -> ~/.local/bin/"
+            cp moonshine-ctl ~/.local/bin/moonshine-ctl && ok "moonshine-ctl -> ~/.local/bin/"
+            chmod +x ~/.local/bin/moonshine-daemon ~/.local/bin/moonshine-ctl
+            rm -f moonshine-daemon moonshine-ctl
+        } || warn "Go build failed — see shell-go.nix"
+    else
+        warn "Go not found and no shell-go.nix — skipping daemon build"
+    fi
+fi
 
-# Legacy scripts
-cp moonshine-voice ~/.local/share/moonshine/ 2>/dev/null && ok "moonshine-voice"
-cp voice-type ~/.local/share/moonshine/ 2>/dev/null && ok "voice-type"
-cp voice-record ~/.local/share/moonshine/ 2>/dev/null && ok "voice-record"
-cp record.py ~/.local/share/moonshine/ 2>/dev/null && ok "record.py"
+# --- Legacy scripts (kept for fallback) ---
+cp shell.nix ~/.local/share/moonshine/ 2>/dev/null && ok "shell.nix (legacy)"
+cp transcribe.py ~/.local/share/moonshine/ 2>/dev/null && ok "transcribe.py (legacy)"
+cp record-simple ~/.local/share/moonshine/ 2>/dev/null && ok "record-simple (legacy)"
+cp voice-toggle ~/.local/share/moonshine/ 2>/dev/null && ok "voice-toggle (legacy)"
 
-# Waybar module
-cp waybar-moonshine ~/.local/bin/ && ok "waybar-moonshine -> ~/.local/bin/"
+# Legacy symlinks
+ln -sf ~/.local/share/moonshine/voice-toggle ~/.local/bin/voice-toggle 2>/dev/null && ok "symlink voice-toggle (legacy)"
 
-# Make executable
-chmod +x ~/.local/bin/waybar-moonshine
-chmod +x ~/.local/share/moonshine/voice-toggle
-chmod +x ~/.local/share/moonshine/transcribe.py
-chmod +x ~/.local/share/moonshine/record-simple
-chmod +x ~/.local/share/moonshine/moonshine-voice 2>/dev/null
-chmod +x ~/.local/share/moonshine/voice-type 2>/dev/null
-chmod +x ~/.local/share/moonshine/voice-record 2>/dev/null
-chmod +x ~/.local/share/moonshine/record.py 2>/dev/null
+# Waybar module (still useful as fallback status indicator)
+cp waybar-moonshine ~/.local/bin/ 2>/dev/null && ok "waybar-moonshine -> ~/.local/bin/"
+chmod +x ~/.local/bin/waybar-moonshine 2>/dev/null
 
-# Symlinks to PATH
-ln -sf ~/.local/share/moonshine/voice-toggle ~/.local/bin/voice-toggle && ok "symlink voice-toggle"
-ln -sf ~/.local/share/moonshine/moonshine-voice ~/.local/bin/moonshine-voice 2>/dev/null && ok "symlink moonshine-voice"
-ln -sf ~/.local/share/moonshine/voice-type ~/.local/bin/voice-type 2>/dev/null && ok "symlink voice-type"
-ln -sf ~/.local/share/moonshine/voice-record ~/.local/bin/voice-record 2>/dev/null && ok "symlink voice-record"
+# Make legacy scripts executable
+chmod +x ~/.local/share/moonshine/voice-toggle 2>/dev/null
+chmod +x ~/.local/share/moonshine/transcribe.py 2>/dev/null
+chmod +x ~/.local/share/moonshine/record-simple 2>/dev/null
 
 # Generate sounds
 if [[ -f generate-sounds.sh ]]; then
@@ -79,6 +91,13 @@ fi
 echo "idle" > /tmp/moonshine/status
 
 echo ""
-ok "Moonshine deployed. Add keybindings to sway config:"
+ok "Moonshine deployed."
+echo ""
+echo "  Go daemon (recommended):"
+echo "    exec ~/.local/bin/moonshine-daemon"
+echo "    bindsym --whole-window button8 exec ~/.local/bin/moonshine-ctl toggle clipboard"
+echo "    bindsym --whole-window \$mod+button8 exec ~/.local/bin/moonshine-ctl toggle type"
+echo ""
+echo "  Legacy bash (fallback):"
 echo "    bindsym --whole-window button8 exec ~/.local/bin/voice-toggle clipboard"
 echo "    bindsym --whole-window \$mod+button8 exec ~/.local/bin/voice-toggle type"
