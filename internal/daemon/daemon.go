@@ -105,6 +105,7 @@ func expandVoiceCommands(text string) string {
 		{"newline", "\n"},
 		{"enter", "\n"},
 		{"tab", "\t"},
+		{"space", " "},
 	}
 
 	result := text
