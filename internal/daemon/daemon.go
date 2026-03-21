@@ -82,9 +82,17 @@ type StateChange struct {
 }
 
 const (
-	stateDir  = "/tmp/moonshine"
-	soundsDir = "/home" // overridden by actual path at runtime
+	stateDir          = "/tmp/moonshine"
+	soundsDir         = "/home" // overridden by actual path at runtime
+	maxHistoryEntries = 50
 )
+
+// HistoryEntry represents a single transcription record.
+type HistoryEntry struct {
+	Time time.Time
+	Mode OutputMode
+	Text string
+}
 
 // historyPath returns the path to the transcription history file.
 func historyPath() string {
@@ -92,20 +100,65 @@ func historyPath() string {
 }
 
 // expandVoiceCommands replaces voice commands with their character equivalents.
-// Case-insensitive matching.
+// Case-insensitive matching. Special keys use {KEY} placeholder format.
 func expandVoiceCommands(text string) string {
 	// Order matters — longer phrases first to avoid partial matches
 	replacements := []struct {
 		phrase string
 		char   string
 	}{
+		// Multi-word phrases first
 		{"new paragraph", "\n\n"},
 		{"newparagraph", "\n\n"},
 		{"new line", "\n"},
 		{"newline", "\n"},
+		{"arrow down", "{Down}"},
+		{"arrow up", "{Up}"},
+		{"arrow left", "{Left}"},
+		{"arrow right", "{Right}"},
+		{"double ampersand", "&&"},
+		{"double pipe", "||"},
+		{"double equals", "=="},
+		{"triple equals", "==="},
+		{"not equals", "!="},
+		{"open paren", "("},
+		{"left paren", "("},
+		{"close paren", ")"},
+		{"right paren", ")"},
+		{"open bracket", "["},
+		{"left bracket", "["},
+		{"close bracket", "]"},
+		{"right bracket", "]"},
+		{"open brace", "{"},
+		{"left brace", "{"},
+		{"close brace", "}"},
+		{"right brace", "}"},
+		{"double quote", "\""},
+		{"single quote", "'"},
+		{"dollar sign", "$"},
+		// Single words
+		{"backspace", "{BackSpace}"},
 		{"enter", "\n"},
 		{"tab", "\t"},
 		{"space", " "},
+		{"equals", "="},
+		{"colon", ":"},
+		{"semicolon", ";"},
+		{"comma", ","},
+		{"period", "."},
+		{"dot", "."},
+		{"quote", "'"},
+		{"underscore", "_"},
+		{"plus", "+"},
+		{"minus", "-"},
+		{"asterisk", "*"},
+		{"star", "*"},
+		{"slash", "/"},
+		{"backslash", "\\"},
+		{"ampersand", "&"},
+		{"pipe", "|"},
+		{"hash", "#"},
+		{"pound", "#"},
 	}
 
 	result := text
@@ -128,19 +181,83 @@ func expandVoiceCommands(text string) string {
 	return result
 }
 
-// logTranscription appends a timestamped transcription to the history file.
-func logTranscription(mode OutputMode, text string) {
+// logTranscription appends a timestamped transcription to the history file
+// and to the in-memory history buffer.
+func (d *Daemon) logTranscription(mode OutputMode, text string) {
+	now := time.Now()
+
+	// Append to file
 	path := historyPath()
 	os.MkdirAll(filepath.Dir(path), 0o755)
+	if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		fmt.Fprintf(f, "[%s] [%s] %s\n", now.Format("2006-01-02 15:04:05"), mode, text)
+		f.Close()
+	}
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// Append to in-memory history
+	d.mu.Lock()
+	d.history = append(d.history, HistoryEntry{Time: now, Mode: mode, Text: text})
+	if len(d.history) > maxHistoryEntries {
+		d.history = d.history[len(d.history)-maxHistoryEntries:]
+	}
+	d.mu.Unlock()
+}
+
+// loadHistory reads existing entries from the history log file into memory.
+func (d *Daemon) loadHistory() {
+	data, err := os.ReadFile(historyPath())
 	if err != nil {
 		return
 	}
-	defer f.Close()
 
-	ts := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Fprintf(f, "[%s] [%s] %s\n", ts, mode, text)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		// Format: [2006-01-02 15:04:05] [mode] text
+		if len(line) < 24 || line[0] != '[' {
+			continue
+		}
+		closeBracket := strings.Index(line, "]")
+		if closeBracket < 0 {
+			continue
+		}
+		ts, err := time.Parse("2006-01-02 15:04:05", line[1:closeBracket])
+		if err != nil {
+			continue
+		}
+		rest := line[closeBracket+2:] // skip "] "
+		if len(rest) < 3 || rest[0] != '[' {
+			continue
+		}
+		modeEnd := strings.Index(rest, "]")
+		if modeEnd < 0 {
+			continue
+		}
+		mode := ParseOutputMode(rest[1:modeEnd])
+		text := ""
+		if modeEnd+2 < len(rest) {
+			text = rest[modeEnd+2:]
+		}
+		if text == "" {
+			continue
+		}
+		d.history = append(d.history, HistoryEntry{Time: ts, Mode: mode, Text: text})
+	}
+
+	// Keep only the last maxHistoryEntries
+	if len(d.history) > maxHistoryEntries {
+		d.history = d.history[len(d.history)-maxHistoryEntries:]
+	}
+}
+
+// History returns the transcription history, most recent first.
+func (d *Daemon) History() []HistoryEntry {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	result := make([]HistoryEntry, len(d.history))
+	for i, e := range d.history {
+		result[len(d.history)-1-i] = e
+	}
+	return result
 }
 
 // Daemon is the core state machine: idle -> recording -> processing -> idle.
@@ -159,6 +276,9 @@ type Daemon struct {
 	stream         *moonshine.Stream
 	listenCancel   context.CancelFunc
 	listening      bool
+
+	// Transcription history (most recent last, capped at maxHistoryEntries).
+	history []HistoryEntry
 
 	// StateCh broadcasts state changes (buffered, non-blocking send).
 	StateCh chan StateChange
@@ -189,6 +309,8 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 		verbose:     verbose,
 		StateCh:     make(chan StateChange, 4),
 	}
+
+	d.loadHistory()
 
 	os.MkdirAll(stateDir, 0o755)
 	d.writeStatus()
@@ -302,7 +424,7 @@ func (d *Daemon) Toggle() (string, error) {
 		// Output
 		CopyToClipboard(text)
 		d.playSound("success.wav")
-		logTranscription(currentMode, text)
+		d.logTranscription(currentMode, text)
 
 		if currentMode == ModeType {
 			Notify("Typing...", text)
@@ -540,7 +662,7 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 				}
 
 				// Log and type text into focused window
-				logTranscription(ModeFreeSpeech, line.Text)
+				d.logTranscription(ModeFreeSpeech, line.Text)
 				if err := TypeText(text); err != nil {
 					if d.verbose {
 						log.Printf("free-speech type: %s", err)

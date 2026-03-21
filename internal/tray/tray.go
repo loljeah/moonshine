@@ -1,10 +1,14 @@
 package tray
 
 import (
+	"fmt"
+
 	"moonshine-daemon/internal/daemon"
 
 	"fyne.io/systray"
 )
+
+const historySlots = 20
 
 // Tray manages the system tray icon and menu.
 type Tray struct {
@@ -18,6 +22,11 @@ type Tray struct {
 	mFreeSpeech  *systray.MenuItem
 	mDevices     []*systray.MenuItem
 	mDeviceSub   *systray.MenuItem
+
+	// History submenu
+	mHistorySub   *systray.MenuItem
+	mHistoryItems []*systray.MenuItem
+	historyTexts  []string // full text for each slot (for clipboard copy)
 }
 
 // Run starts the system tray. Blocks until quit is selected.
@@ -50,6 +59,27 @@ func (t *Tray) onReady() {
 	t.mDeviceSub = systray.AddMenuItem("Device", "Audio input device")
 	t.refreshDevices()
 	mRefresh := t.mDeviceSub.AddSubMenuItem("Refresh Devices", "Re-scan PipeWire")
+
+	// History submenu
+	t.mHistorySub = systray.AddMenuItem("History", "Transcription history")
+	t.mHistoryItems = make([]*systray.MenuItem, historySlots)
+	t.historyTexts = make([]string, historySlots)
+	for i := 0; i < historySlots; i++ {
+		m := t.mHistorySub.AddSubMenuItem("", "")
+		m.Hide()
+		t.mHistoryItems[i] = m
+
+		idx := i
+		go func() {
+			for range m.ClickedCh {
+				text := t.historyTexts[idx]
+				if text != "" {
+					daemon.CopyToClipboard(text)
+				}
+			}
+		}()
+	}
+	t.refreshHistory()
 
 	systray.AddSeparator()
 
@@ -142,6 +172,35 @@ func (t *Tray) refreshDevices() {
 	}
 }
 
+func (t *Tray) refreshHistory() {
+	entries := t.d.History()
+
+	for i := 0; i < historySlots; i++ {
+		if i < len(entries) {
+			e := entries[i]
+			ts := e.Time.Format("15:04")
+			text := e.Text
+			if len(text) > 60 {
+				text = text[:57] + "..."
+			}
+			label := fmt.Sprintf("%s — %s", ts, text)
+			t.mHistoryItems[i].SetTitle(label)
+			t.mHistoryItems[i].SetTooltip(e.Text)
+			t.mHistoryItems[i].Show()
+			t.historyTexts[i] = e.Text
+		} else {
+			t.mHistoryItems[i].Hide()
+			t.historyTexts[i] = ""
+		}
+	}
+
+	if len(entries) == 0 {
+		t.mHistorySub.SetTitle("History (empty)")
+	} else {
+		t.mHistorySub.SetTitle(fmt.Sprintf("History (%d)", len(entries)))
+	}
+}
+
 func (t *Tray) watchState() {
 	for sc := range t.d.StateCh {
 		// Update icon
@@ -186,6 +245,11 @@ func (t *Tray) watchState() {
 
 		// Sync radio checks with current mode
 		t.syncModeChecks(sc.Mode)
+
+		// Refresh history when returning to idle (transcription completed)
+		if sc.State == daemon.StateIdle || sc.State == daemon.StateListening {
+			t.refreshHistory()
+		}
 	}
 }
 

@@ -13,8 +13,44 @@ func CopyToClipboard(text string) error {
 }
 
 // TypeText types text into the focused window via wtype.
+// Supports {KEY} placeholders for special keys (e.g., {Up}, {Down}, {Left}, {Right}).
 func TypeText(text string) error {
-	return exec.Command("wtype", "-d", "12", text).Run()
+	// Parse text for {KEY} placeholders and build wtype args
+	var args []string
+	args = append(args, "-d", "12")
+
+	i := 0
+	for i < len(text) {
+		// Look for {KEY} pattern
+		if text[i] == '{' {
+			end := strings.Index(text[i:], "}")
+			if end > 1 {
+				key := text[i+1 : i+end]
+				args = append(args, "-k", key)
+				i += end + 1
+				continue
+			}
+		}
+
+		// Find next { or end of string
+		next := strings.Index(text[i:], "{")
+		if next < 0 {
+			// No more special keys, add rest as text
+			args = append(args, text[i:])
+			break
+		} else if next > 0 {
+			// Add text before next {
+			args = append(args, text[i:i+next])
+		}
+		i += next
+	}
+
+	if len(args) == 2 {
+		// Only -d 12, no content
+		return nil
+	}
+
+	return exec.Command("wtype", args...).Run()
 }
 
 // Notify sends a desktop notification via notify-send.
