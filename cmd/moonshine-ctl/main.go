@@ -13,12 +13,15 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: moonshine-ctl <command> [args...]")
-		fmt.Fprintln(os.Stderr, "commands: toggle [clipboard|type], status, mode [clipboard|type|free-speech],")
-		fmt.Fprintln(os.Stderr, "          listen start|stop, device <name>, devices, quit")
+		fmt.Fprintln(os.Stderr, "commands: toggle [clipboard|type], status, mode [clipboard|type],")
+		fmt.Fprintln(os.Stderr, "          freespeech on|off|toggle, listen start|stop,")
+		fmt.Fprintln(os.Stderr, "          device <name>, devices, settings [key [value]],")
+		fmt.Fprintln(os.Stderr, "          logs [n], quit")
 		os.Exit(1)
 	}
 
 	command := strings.Join(os.Args[1:], " ")
+	isMultiLine := strings.HasPrefix(command, "logs") || strings.HasPrefix(command, "devices")
 
 	conn, err := net.Dial("unix", daemon.SocketPath)
 	if err != nil {
@@ -37,6 +40,13 @@ func main() {
 
 		if strings.HasPrefix(line, "ERR") {
 			os.Exit(1)
+		}
+
+		// For multi-line responses, continue reading
+		if isMultiLine {
+			for scanner.Scan() {
+				fmt.Println(scanner.Text())
+			}
 		}
 	}
 }

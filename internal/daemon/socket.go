@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -190,6 +192,31 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 		default:
 			fmt.Fprintf(conn, "ERR freespeech on|off|toggle, got %s\n", args[0])
 		}
+
+	case "logs":
+		// Return recent log entries
+		n := 50 // default lines
+		if len(args) > 0 {
+			if parsed, err := strconv.Atoi(args[0]); err == nil && parsed > 0 {
+				n = parsed
+				if n > 500 {
+					n = 500 // cap at 500 lines
+				}
+			}
+		}
+		logPath := filepath.Join(os.Getenv("HOME"), ".local", "share", "moonshine", "daemon.log")
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err)
+			return
+		}
+		lines := strings.Split(string(data), "\n")
+		start := len(lines) - n
+		if start < 0 {
+			start = 0
+		}
+		recent := lines[start:]
+		fmt.Fprintf(conn, "OK\n%s\n", strings.Join(recent, "\n"))
 
 	case "settings":
 		if len(args) == 0 {

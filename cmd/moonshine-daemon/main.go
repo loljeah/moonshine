@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -15,14 +16,47 @@ import (
 	"moonshine-daemon/internal/tray"
 )
 
+// logPath returns the path to the daemon log file.
+func logPath() string {
+	return filepath.Join(os.Getenv("HOME"), ".local", "share", "moonshine", "daemon.log")
+}
+
+// setupLogging configures logging to write to both stderr and a persistent log file.
+// Returns a cleanup function to close the log file.
+func setupLogging() func() {
+	log.SetPrefix("moonshine: ")
+	log.SetFlags(log.Ldate | log.Ltime)
+
+	path := logPath()
+	os.MkdirAll(filepath.Dir(path), 0o755)
+
+	// Open log file (append mode, create if not exists)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("warning: could not open log file: %s", err)
+		return func() {}
+	}
+
+	// Write to both stderr and file
+	multi := io.MultiWriter(os.Stderr, f)
+	log.SetOutput(multi)
+
+	// Log startup marker
+	log.Println("=== daemon starting ===")
+
+	return func() {
+		log.Println("=== daemon stopped ===")
+		f.Close()
+	}
+}
+
 func main() {
 	configPath := flag.String("config", config.DefaultPath, "config file path")
 	verbose := flag.Bool("verbose", false, "verbose logging")
 	noTray := flag.Bool("no-tray", false, "disable system tray icon")
 	flag.Parse()
 
-	log.SetPrefix("moonshine: ")
-	log.SetFlags(log.Ltime)
+	closeLog := setupLogging()
 
 	// Load config
 	cfg, err := config.Load(*configPath)
@@ -62,6 +96,7 @@ func main() {
 		log.Println("shutting down...")
 		sock.Close()
 		d.Close()
+		closeLog()
 	}
 
 	// Graceful shutdown on signal
