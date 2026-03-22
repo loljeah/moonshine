@@ -68,10 +68,8 @@ func (t *Tray) onReady() {
 	t.d.SetMode(daemon.ModeType)
 	t.syncModeChecks(daemon.ModeType)
 	t.syncTriggerChecks(true)
-	// Start FreeSpeech after menu is ready
-	go func() {
-		t.d.SetFreeSpeech(true)
-	}()
+	// Start FreeSpeech (no goroutine - avoid race condition)
+	t.d.SetFreeSpeech(true)
 
 	systray.AddSeparator()
 

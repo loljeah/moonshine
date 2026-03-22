@@ -370,8 +370,8 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 
 	d := &Daemon{
 		state:       StateIdle,
-		mode:        ModeClipboard,
-		enabled:     true, // enabled by default
+		mode:        ModeType, // Default to Type mode (not Clipboard)
+		enabled:     true,     // enabled by default
 		transcriber: transcriber,
 		recorder:    audio.NewRecorder(target),
 		cfg:         cfg,
@@ -747,11 +747,11 @@ func (d *Daemon) StopListening() {
 }
 
 // streamingLoop continuously reads audio and feeds it to the streaming transcriber.
-// Handles device disconnects gracefully and attempts auto-recovery.
+// Handles device disconnects gracefully and attempts auto-recovery with exponential backoff.
+// Never gives up - keeps trying until explicitly stopped via context cancellation.
 func (d *Daemon) streamingLoop(ctx context.Context) {
 	const chunkSize = 4800 // 300ms at 16kHz
-	const maxRetries = 3
-	retryCount := 0
+	consecutiveErrors := 0
 
 	defer func() {
 		// Ensure state is properly cleaned up when loop exits
@@ -780,7 +780,16 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 		d.mu.Unlock()
 
 		if sr == nil || stream == nil {
-			return
+			// Resources not ready, try to restart
+			log.Printf("streaming resources nil, attempting restart...")
+			if err := d.restartStreaming(); err != nil {
+				log.Printf("restart failed: %s, will retry...", err)
+				consecutiveErrors++
+				d.waitWithBackoff(ctx, consecutiveErrors)
+				continue
+			}
+			consecutiveErrors = 0
+			continue
 		}
 
 		chunk, err := sr.ReadChunk(chunkSize)
@@ -794,40 +803,36 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 
 			// Recorder was stopped or pipe broken
 			log.Printf("streaming read error: %s (device may have disconnected)", err)
+			consecutiveErrors++
 
-			retryCount++
-			if retryCount > maxRetries {
-				log.Printf("max retries (%d) exceeded, stopping free speech", maxRetries)
-				Notify("Moonshine", "Microphone disconnected. Free Speech disabled.")
-				return
+			// Notify user on first error
+			if consecutiveErrors == 1 {
+				Notify("Moonshine", "Microphone issue - reconnecting...")
 			}
-
-			log.Printf("attempting to restart listening (retry %d/%d)...", retryCount, maxRetries)
 
 			// Clean up current resources
 			d.cleanupStreamingResources()
 
-			// Wait before retry
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
+			// Wait with exponential backoff
+			d.waitWithBackoff(ctx, consecutiveErrors)
 
 			// Try to restart
 			if err := d.restartStreaming(); err != nil {
-				log.Printf("restart failed: %s", err)
-				continue // Will retry or exit based on count
+				log.Printf("restart failed (attempt %d): %s", consecutiveErrors, err)
+				continue // Keep trying
 			}
 
-			// Reset retry count on successful restart
-			retryCount = 0
-			log.Printf("streaming restarted successfully")
+			// Success - reset error count and notify
+			log.Printf("streaming restarted successfully after %d attempts", consecutiveErrors)
+			if consecutiveErrors > 1 {
+				Notify("Moonshine", "Microphone reconnected")
+			}
+			consecutiveErrors = 0
 			continue
 		}
 
-		// Reset retry count on successful read
-		retryCount = 0
+		// Reset error count on successful read
+		consecutiveErrors = 0
 
 		lines, err := stream.AddAudio(chunk, audio.SampleRate)
 		if err != nil {
@@ -891,6 +896,25 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 				break // Exit line loop since stream was reset
 			}
 		}
+	}
+}
+
+// waitWithBackoff waits with exponential backoff based on error count.
+// Caps at 30 seconds. Can be cancelled via context.
+func (d *Daemon) waitWithBackoff(ctx context.Context, errorCount int) {
+	// Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped)
+	delay := time.Duration(1<<uint(errorCount)) * time.Second
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	if delay < 2*time.Second {
+		delay = 2 * time.Second
+	}
+
+	log.Printf("waiting %v before retry...", delay)
+	select {
+	case <-ctx.Done():
+	case <-time.After(delay):
 	}
 }
 
