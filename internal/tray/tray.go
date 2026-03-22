@@ -63,8 +63,15 @@ func (t *Tray) onReady() {
 	// Output destination — where transcribed text goes
 	t.mClipboard = systray.AddMenuItem("○ Clipboard", "Copy transcriptions to clipboard")
 	t.mType = systray.AddMenuItem("● Type", "Type into focused window")
+
+	// Set defaults: Always Listening + Type
+	t.d.SetMode(daemon.ModeType)
 	t.syncModeChecks(daemon.ModeType)
-	t.syncTriggerChecks(true) // default to FreeSpeech
+	t.syncTriggerChecks(true)
+	// Start FreeSpeech after menu is ready
+	go func() {
+		t.d.SetFreeSpeech(true)
+	}()
 
 	systray.AddSeparator()
 

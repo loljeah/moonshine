@@ -343,6 +343,9 @@ type Daemon struct {
 	listenCancel   context.CancelFunc
 	listening      bool
 
+	// Keep-alive for USB headset
+	keepAliveCancel context.CancelFunc
+
 	// Transcription history (most recent last, capped at maxHistoryEntries).
 	history []HistoryEntry
 
@@ -381,6 +384,10 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 
 	os.MkdirAll(stateDir, 0o755)
 	d.writeStatus()
+
+	// Start USB headset keep-alive loop
+	d.startKeepAlive()
+
 	return d
 }
 
@@ -761,9 +768,19 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 
 		chunk, err := sr.ReadChunk(chunkSize)
 		if err != nil {
-			// Recorder was stopped or pipe broken
-			if d.verbose {
-				log.Printf("streaming read: %s", err)
+			// Recorder was stopped or pipe broken - always log this
+			log.Printf("streaming read error: %s (device may have disconnected)", err)
+			// Try to recover by restarting
+			d.mu.Lock()
+			wasListening := d.listening
+			d.mu.Unlock()
+			if wasListening {
+				log.Printf("attempting to restart listening...")
+				d.StopListening()
+				time.Sleep(2 * time.Second)
+				if err := d.StartListening(); err != nil {
+					log.Printf("restart failed: %s", err)
+				}
 			}
 			return
 		}
@@ -837,7 +854,86 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 
 // Close cleans up the daemon.
 func (d *Daemon) Close() {
+	d.stopKeepAlive()
 	d.StopListening()
 	d.transcriber.Close()
 	os.Remove(filepath.Join(stateDir, "status"))
+}
+
+// startKeepAlive starts a background goroutine that periodically pings
+// the audio device to prevent USB headsets from going into power-save mode.
+func (d *Daemon) startKeepAlive() {
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mu.Lock()
+	d.keepAliveCancel = cancel
+	d.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		log.Printf("keep-alive: started (30s interval)")
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("keep-alive: stopped")
+				return
+			case <-ticker.C:
+				d.pingAudioDevice()
+			}
+		}
+	}()
+}
+
+// stopKeepAlive stops the keep-alive goroutine.
+func (d *Daemon) stopKeepAlive() {
+	d.mu.Lock()
+	if d.keepAliveCancel != nil {
+		d.keepAliveCancel()
+		d.keepAliveCancel = nil
+	}
+	d.mu.Unlock()
+}
+
+// pingAudioDevice sends a brief silent audio probe to keep the USB device awake.
+// Also verifies the device is still accessible and logs any issues.
+func (d *Daemon) pingAudioDevice() {
+	target := d.recorder.GetTarget()
+	if target == "" {
+		return
+	}
+
+	// Check if device still exists
+	devices, err := audio.ListDevices()
+	if err != nil {
+		log.Printf("keep-alive: failed to list devices: %s", err)
+		return
+	}
+
+	found := false
+	for _, dev := range devices {
+		if dev.NodeName == target {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		log.Printf("keep-alive: WARNING - device %q not found! Available devices:", target)
+		for _, dev := range devices {
+			log.Printf("  - %s (%s)", dev.NodeName, dev.Description)
+		}
+		// Try to find a similar device
+		newTarget := audio.FindDevice(devices, d.cfg.Device())
+		if newTarget != "" && newTarget != target {
+			log.Printf("keep-alive: switching to %s", newTarget)
+			d.recorder.SetTarget(newTarget)
+		}
+		return
+	}
+
+	if d.verbose {
+		log.Printf("keep-alive: device %s OK", target)
+	}
 }
