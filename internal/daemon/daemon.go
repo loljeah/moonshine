@@ -6,9 +6,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"moonshine-daemon/internal/audio"
 	"moonshine-daemon/internal/config"
@@ -44,20 +46,18 @@ func (s State) String() string {
 }
 
 // OutputMode determines where transcribed text goes.
+// FreeSpeech is now a separate toggle, not an output mode.
 type OutputMode int
 
 const (
-	ModeClipboard   OutputMode = iota
+	ModeClipboard OutputMode = iota
 	ModeType
-	ModeFreeSpeech
 )
 
 func (m OutputMode) String() string {
 	switch m {
 	case ModeType:
 		return "type"
-	case ModeFreeSpeech:
-		return "free-speech"
 	default:
 		return "clipboard"
 	}
@@ -68,8 +68,6 @@ func ParseOutputMode(s string) OutputMode {
 	switch s {
 	case "type":
 		return ModeType
-	case "free-speech":
-		return ModeFreeSpeech
 	default:
 		return ModeClipboard
 	}
@@ -77,8 +75,10 @@ func ParseOutputMode(s string) OutputMode {
 
 // StateChange is sent to listeners (e.g. the tray) when state changes.
 type StateChange struct {
-	State State
-	Mode  OutputMode
+	State      State
+	Mode       OutputMode
+	FreeSpeech bool // true if FreeSpeech toggle is enabled
+	Enabled    bool // true if daemon is enabled (master toggle)
 }
 
 const (
@@ -136,6 +136,11 @@ func expandVoiceCommands(text string) string {
 		{"double quote", "\""},
 		{"single quote", "'"},
 		{"dollar sign", "$"},
+		{"question mark", "?"},
+		{"exclamation point", "!"},
+		{"exclamation mark", "!"},
+		{"ellipsis", "..."},
+		{"em dash", "—"},
 		// Single words
 		{"backspace", "{BackSpace}"},
 		{"enter", "\n"},
@@ -151,6 +156,8 @@ func expandVoiceCommands(text string) string {
 		{"underscore", "_"},
 		{"plus", "+"},
 		{"minus", "-"},
+		{"hyphen", "-"},
+		{"dash", "-"},
 		{"asterisk", "*"},
 		{"star", "*"},
 		{"slash", "/"},
@@ -179,6 +186,63 @@ func expandVoiceCommands(text string) string {
 	}
 
 	return result
+}
+
+// removeFillers removes common filler words and phrases from transcribed text.
+// Uses word boundaries to avoid matching fillers inside valid words.
+func removeFillers(text string) string {
+	// Compile patterns for filler words/phrases (case-insensitive, whole words only)
+	fillers := []string{
+		`\bum\b`,
+		`\buh\b`,
+		`\ber\b`,
+		`\bah\b`,
+		`\byou know\b`,
+		`\bi mean\b`,
+	}
+
+	result := text
+	for _, pattern := range fillers {
+		re := regexp.MustCompile(`(?i)` + pattern)
+		result = re.ReplaceAllString(result, "")
+	}
+
+	// Collapse multiple spaces into single space
+	spaceRe := regexp.MustCompile(`\s+`)
+	result = spaceRe.ReplaceAllString(result, " ")
+
+	// Trim leading/trailing whitespace
+	return strings.TrimSpace(result)
+}
+
+// autoCapitalize capitalizes the first character and after sentence-ending punctuation.
+// Also capitalizes standalone "i" to "I".
+func autoCapitalize(text string) string {
+	if text == "" {
+		return text
+	}
+
+	// Capitalize standalone "i" -> "I"
+	iRe := regexp.MustCompile(`\bi\b`)
+	text = iRe.ReplaceAllString(text, "I")
+
+	// Convert to runes for proper Unicode handling
+	runes := []rune(text)
+
+	// Capitalize first character
+	if len(runes) > 0 && unicode.IsLetter(runes[0]) {
+		runes[0] = unicode.ToUpper(runes[0])
+	}
+
+	// Capitalize after sentence-ending punctuation followed by space
+	for i := 0; i < len(runes)-2; i++ {
+		if (runes[i] == '.' || runes[i] == '?' || runes[i] == '!') &&
+			runes[i+1] == ' ' && unicode.IsLetter(runes[i+2]) {
+			runes[i+2] = unicode.ToUpper(runes[i+2])
+		}
+	}
+
+	return string(runes)
 }
 
 // logTranscription appends a timestamped transcription to the history file
@@ -265,13 +329,15 @@ type Daemon struct {
 	mu          sync.Mutex
 	state       State
 	mode        OutputMode
+	enabled     bool // master enable/disable toggle
 	transcriber *moonshine.Transcriber
 	recorder    *audio.Recorder
 	cfg         *config.Config
 	soundDir    string
 	verbose     bool
 
-	// Free Speech mode
+	// Free Speech toggle (independent of output mode)
+	freeSpeech     bool // true = always-listening enabled
 	streamRecorder *audio.StreamRecorder
 	stream         *moonshine.Stream
 	listenCancel   context.CancelFunc
@@ -302,6 +368,7 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 	d := &Daemon{
 		state:       StateIdle,
 		mode:        ModeClipboard,
+		enabled:     true, // enabled by default
 		transcriber: transcriber,
 		recorder:    audio.NewRecorder(target),
 		cfg:         cfg,
@@ -319,13 +386,19 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 
 // Toggle starts or stops recording using the daemon's current output mode
 // (set via SetMode or tray menu). Returns transcribed text on stop, or
-// "recording" if recording just started. In Free Speech mode, toggles
-// listening on/off.
+// "recording" if recording just started. When FreeSpeech is enabled,
+// toggle is ignored (use ToggleFreeSpeech instead).
 func (d *Daemon) Toggle() (string, error) {
 	d.mu.Lock()
 
-	// Free Speech mode: toggle listening
-	if d.mode == ModeFreeSpeech {
+	// Check if disabled
+	if !d.enabled {
+		d.mu.Unlock()
+		return "", fmt.Errorf("disabled")
+	}
+
+	// When FreeSpeech is active, toggle controls listening not recording
+	if d.freeSpeech {
 		if d.listening {
 			d.mu.Unlock()
 			d.StopListening()
@@ -409,6 +482,11 @@ func (d *Daemon) Toggle() (string, error) {
 		}
 		text := strings.Join(parts, " ")
 
+		// Apply text processing pipeline
+		text = removeFillers(text)
+		text = expandVoiceCommands(text)
+		text = autoCapitalize(text)
+
 		d.mu.Lock()
 		d.state = StateIdle
 		d.writeStatus()
@@ -484,22 +562,74 @@ func (d *Daemon) GetMode() OutputMode {
 }
 
 // SetMode changes the output mode and notifies listeners (tray).
-// Stops listening if leaving Free Speech mode.
+// FreeSpeech is now a separate toggle, so mode changes don't affect it.
 func (d *Daemon) SetMode(m OutputMode) {
 	d.mu.Lock()
-	oldMode := d.mode
 	d.mode = m
+	state := d.state
 	d.mu.Unlock()
 
-	// Stop listening if leaving Free Speech mode
-	if oldMode == ModeFreeSpeech && m != ModeFreeSpeech {
+	d.notify(state)
+}
+
+// SetFreeSpeech enables or disables the FreeSpeech toggle.
+// When enabled, starts listening. When disabled, stops listening.
+// Ignored if daemon is disabled.
+func (d *Daemon) SetFreeSpeech(enabled bool) {
+	d.mu.Lock()
+	if !d.enabled && enabled {
+		// Can't enable FreeSpeech while daemon is disabled
+		d.mu.Unlock()
+		return
+	}
+	if d.freeSpeech == enabled {
+		d.mu.Unlock()
+		return
+	}
+	d.freeSpeech = enabled
+	d.mu.Unlock()
+
+	if enabled {
+		d.StartListening()
+	} else {
 		d.StopListening()
+	}
+}
+
+// GetFreeSpeech returns the current FreeSpeech toggle state.
+func (d *Daemon) GetFreeSpeech() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.freeSpeech
+}
+
+// SetEnabled enables or disables the entire daemon.
+// When disabled, ignores all recording triggers and stops FreeSpeech.
+func (d *Daemon) SetEnabled(enabled bool) {
+	d.mu.Lock()
+	if d.enabled == enabled {
+		d.mu.Unlock()
+		return
+	}
+	d.enabled = enabled
+	d.mu.Unlock()
+
+	if !enabled {
+		// Stop FreeSpeech if running
+		d.SetFreeSpeech(false)
 	}
 
 	d.mu.Lock()
 	state := d.state
 	d.mu.Unlock()
 	d.notify(state)
+}
+
+// GetEnabled returns the master enable state.
+func (d *Daemon) GetEnabled() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.enabled
 }
 
 func (d *Daemon) writeStatus() {
@@ -509,7 +639,7 @@ func (d *Daemon) writeStatus() {
 
 func (d *Daemon) notify(s State) {
 	select {
-	case d.StateCh <- StateChange{State: s, Mode: d.mode}:
+	case d.StateCh <- StateChange{State: s, Mode: d.mode, FreeSpeech: d.freeSpeech, Enabled: d.enabled}:
 	default:
 	}
 }
@@ -560,6 +690,7 @@ func (d *Daemon) StartListening() error {
 	d.stream = stream
 	d.listenCancel = cancel
 	d.listening = true
+	d.freeSpeech = true // Ensure toggle is set when starting
 	d.state = StateListening
 	d.writeStatus()
 	d.notify(StateListening)
@@ -578,6 +709,7 @@ func (d *Daemon) StopListening() {
 	}
 
 	d.listening = false
+	d.freeSpeech = false // Clear the toggle when stopping
 	if d.listenCancel != nil {
 		d.listenCancel()
 		d.listenCancel = nil
@@ -656,17 +788,34 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 			}
 
 			if line.IsComplete && line.Text != "" {
-				text := expandVoiceCommands(line.Text)
+				// Apply text processing pipeline
+				text := removeFillers(line.Text)
+				text = expandVoiceCommands(text)
+				text = autoCapitalize(text)
+
+				// Get current output mode
+				d.mu.Lock()
+				currentMode := d.mode
+				d.mu.Unlock()
+
 				if d.verbose {
-					log.Printf("free-speech: %q -> %q", line.Text, text)
+					log.Printf("free-speech [%s]: %q -> %q", currentMode, line.Text, text)
 				}
 
-				// Log and type text into focused window
-				d.logTranscription(ModeFreeSpeech, line.Text)
-				if err := TypeText(text); err != nil {
-					if d.verbose {
-						log.Printf("free-speech type: %s", err)
+				// Log transcription
+				d.logTranscription(currentMode, line.Text)
+
+				// Output based on current mode
+				switch currentMode {
+				case ModeType:
+					if err := TypeText(text); err != nil {
+						if d.verbose {
+							log.Printf("free-speech type: %s", err)
+						}
 					}
+				case ModeClipboard:
+					CopyToClipboard(text)
+					d.playSound("success.wav")
 				}
 
 				// Reset stream to clear completed transcript and prepare for next utterance

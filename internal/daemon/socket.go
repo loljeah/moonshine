@@ -141,6 +141,35 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "ERR listen start|stop, got %s\n", args[0])
 		}
 
+	case "freespeech":
+		if len(args) == 0 {
+			// Return current state
+			if s.daemon.GetFreeSpeech() {
+				fmt.Fprintln(conn, "OK on")
+			} else {
+				fmt.Fprintln(conn, "OK off")
+			}
+			return
+		}
+		switch args[0] {
+		case "on", "start", "enable":
+			s.daemon.SetFreeSpeech(true)
+			fmt.Fprintln(conn, "OK on")
+		case "off", "stop", "disable":
+			s.daemon.SetFreeSpeech(false)
+			fmt.Fprintln(conn, "OK off")
+		case "toggle":
+			enabled := !s.daemon.GetFreeSpeech()
+			s.daemon.SetFreeSpeech(enabled)
+			if enabled {
+				fmt.Fprintln(conn, "OK on")
+			} else {
+				fmt.Fprintln(conn, "OK off")
+			}
+		default:
+			fmt.Fprintf(conn, "ERR freespeech on|off|toggle, got %s\n", args[0])
+		}
+
 	case "quit":
 		fmt.Fprintln(conn, "OK")
 		close(s.QuitCh)
