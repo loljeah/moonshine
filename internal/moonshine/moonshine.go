@@ -90,7 +90,9 @@ import "C"
 
 import (
 	"fmt"
+	"log"
 	"strings"
+	"time"
 	"unsafe"
 )
 
@@ -185,8 +187,19 @@ func NewTranscriber(modelPath string, arch ModelArch) (*Transcriber, error) {
 func (t *Transcriber) run() {
 	defer close(t.done)
 	for fn := range t.funcCh {
-		fn()
+		t.safeCall(fn)
 	}
+}
+
+// safeCall executes fn with panic recovery to prevent C library crashes
+// from killing the entire daemon.
+func (t *Transcriber) safeCall(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC in transcriber: %v (recovered, continuing)", r)
+		}
+	}()
+	fn()
 }
 
 func (t *Transcriber) doTranscribe(pcm []float32, sampleRate int) ([]TranscriptLine, error) {
@@ -398,8 +411,17 @@ func (s *Stream) AddAudio(pcm []float32, sampleRate int) ([]StreamTranscriptLine
 }
 
 // Close frees the transcriber resources.
+// Times out after 5 seconds if the transcriber goroutine is stuck.
 func (t *Transcriber) Close() {
 	close(t.funcCh)
-	<-t.done // wait for goroutine to exit
+
+	// Wait for goroutine to exit with timeout
+	select {
+	case <-t.done:
+		// Normal exit
+	case <-time.After(5 * time.Second):
+		log.Printf("WARNING: transcriber close timeout (goroutine may be stuck)")
+	}
+
 	C.moonshine_free_transcriber(t.handle)
 }

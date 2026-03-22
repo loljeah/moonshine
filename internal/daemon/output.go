@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"context"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // CopyToClipboard copies text to the Wayland clipboard via wl-copy.
@@ -64,9 +66,16 @@ func Notify(title, body string) error {
 }
 
 // PlaySound plays a WAV file via pw-play (non-blocking).
+// Uses a timeout to prevent goroutine leaks if pw-play hangs.
 func PlaySound(path string) {
-	cmd := exec.Command("pw-play", path)
-	cmd.Start()
-	// Don't wait — fire and forget
-	go cmd.Wait()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	cmd := exec.CommandContext(ctx, "pw-play", path)
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return
+	}
+	go func() {
+		defer cancel()
+		cmd.Wait()
+	}()
 }

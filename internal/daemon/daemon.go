@@ -747,8 +747,25 @@ func (d *Daemon) StopListening() {
 }
 
 // streamingLoop continuously reads audio and feeds it to the streaming transcriber.
+// Handles device disconnects gracefully and attempts auto-recovery.
 func (d *Daemon) streamingLoop(ctx context.Context) {
 	const chunkSize = 4800 // 300ms at 16kHz
+	const maxRetries = 3
+	retryCount := 0
+
+	defer func() {
+		// Ensure state is properly cleaned up when loop exits
+		d.mu.Lock()
+		if d.listening {
+			d.listening = false
+			d.freeSpeech = false
+			d.state = StateIdle
+			d.writeStatus()
+			d.notify(StateIdle)
+			log.Printf("streaming loop exited, state reset to idle")
+		}
+		d.mu.Unlock()
+	}()
 
 	for {
 		select {
@@ -768,28 +785,53 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 
 		chunk, err := sr.ReadChunk(chunkSize)
 		if err != nil {
-			// Recorder was stopped or pipe broken - always log this
-			log.Printf("streaming read error: %s (device may have disconnected)", err)
-			// Try to recover by restarting
-			d.mu.Lock()
-			wasListening := d.listening
-			d.mu.Unlock()
-			if wasListening {
-				log.Printf("attempting to restart listening...")
-				d.StopListening()
-				time.Sleep(2 * time.Second)
-				if err := d.StartListening(); err != nil {
-					log.Printf("restart failed: %s", err)
-				}
+			// Check if this was an intentional stop
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
-			return
+
+			// Recorder was stopped or pipe broken
+			log.Printf("streaming read error: %s (device may have disconnected)", err)
+
+			retryCount++
+			if retryCount > maxRetries {
+				log.Printf("max retries (%d) exceeded, stopping free speech", maxRetries)
+				Notify("Moonshine", "Microphone disconnected. Free Speech disabled.")
+				return
+			}
+
+			log.Printf("attempting to restart listening (retry %d/%d)...", retryCount, maxRetries)
+
+			// Clean up current resources
+			d.cleanupStreamingResources()
+
+			// Wait before retry
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+
+			// Try to restart
+			if err := d.restartStreaming(); err != nil {
+				log.Printf("restart failed: %s", err)
+				continue // Will retry or exit based on count
+			}
+
+			// Reset retry count on successful restart
+			retryCount = 0
+			log.Printf("streaming restarted successfully")
+			continue
 		}
+
+		// Reset retry count on successful read
+		retryCount = 0
 
 		lines, err := stream.AddAudio(chunk, audio.SampleRate)
 		if err != nil {
-			if d.verbose {
-				log.Printf("streaming transcribe: %s", err)
-			}
+			log.Printf("streaming transcribe error: %s", err)
 			continue
 		}
 
@@ -826,12 +868,12 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 				switch currentMode {
 				case ModeType:
 					if err := TypeText(text); err != nil {
-						if d.verbose {
-							log.Printf("free-speech type: %s", err)
-						}
+						log.Printf("free-speech type error: %s", err)
 					}
 				case ModeClipboard:
-					CopyToClipboard(text)
+					if err := CopyToClipboard(text); err != nil {
+						log.Printf("free-speech clipboard error: %s", err)
+					}
 					d.playSound("success.wav")
 				}
 
@@ -850,6 +892,56 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// cleanupStreamingResources stops current streaming without changing freeSpeech state.
+func (d *Daemon) cleanupStreamingResources() {
+	d.mu.Lock()
+	sr := d.streamRecorder
+	stream := d.stream
+	d.streamRecorder = nil
+	d.stream = nil
+	d.mu.Unlock()
+
+	if sr != nil {
+		sr.Stop()
+	}
+	if stream != nil {
+		stream.Stop()
+		stream.Close()
+	}
+}
+
+// restartStreaming reinitializes the streaming components.
+func (d *Daemon) restartStreaming() error {
+	target := d.recorder.GetTarget()
+	sr := audio.NewStreamRecorder(target)
+
+	if err := sr.Start(); err != nil {
+		return fmt.Errorf("start stream recorder: %w", err)
+	}
+
+	stream, err := d.transcriber.CreateStream()
+	if err != nil {
+		sr.Stop()
+		return fmt.Errorf("create stream: %w", err)
+	}
+
+	if err := stream.Start(); err != nil {
+		stream.Close()
+		sr.Stop()
+		return fmt.Errorf("start stream: %w", err)
+	}
+
+	d.mu.Lock()
+	d.streamRecorder = sr
+	d.stream = stream
+	d.state = StateListening
+	d.writeStatus()
+	d.notify(StateListening)
+	d.mu.Unlock()
+
+	return nil
 }
 
 // Close cleans up the daemon.

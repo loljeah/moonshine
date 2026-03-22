@@ -7,6 +7,14 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
+)
+
+const (
+	// socketReadTimeout prevents DoS from clients that connect but never send data.
+	socketReadTimeout = 5 * time.Second
+	// maxCommandLength prevents memory exhaustion from very long commands.
+	maxCommandLength = 4096
 )
 
 const SocketPath = "/tmp/moonshine/moonshine.sock"
@@ -54,8 +62,18 @@ func (s *SocketServer) acceptLoop() {
 func (s *SocketServer) handleConn(conn net.Conn) {
 	defer conn.Close()
 
+	// Set read deadline to prevent hanging on slow/malicious clients
+	conn.SetReadDeadline(time.Now().Add(socketReadTimeout))
+
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, maxCommandLength), maxCommandLength)
+
 	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			if s.verbose {
+				log.Printf("socket read error: %v", err)
+			}
+		}
 		return
 	}
 
@@ -63,6 +81,9 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 	if s.verbose {
 		log.Printf("socket: %q", line)
 	}
+
+	// Clear deadline for response write
+	conn.SetReadDeadline(time.Time{})
 
 	parts := strings.Fields(line)
 	if len(parts) == 0 {

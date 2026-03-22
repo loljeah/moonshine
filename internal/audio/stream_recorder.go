@@ -7,21 +7,34 @@ import (
 	"math"
 	"os/exec"
 	"sync"
+	"sync/atomic"
+)
+
+// recorderState represents the atomic state of the recorder.
+type recorderState int32
+
+const (
+	stateIdle recorderState = iota
+	stateRunning
+	stateStopping
 )
 
 // StreamRecorder runs pw-record in raw mode, outputting float32 PCM to stdout.
 // Audio is read in chunks for real-time streaming transcription.
+// Thread-safe with atomic state machine to prevent race conditions.
 type StreamRecorder struct {
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdout  io.ReadCloser
-	target  string
-	running bool
+	mu     sync.Mutex
+	state  atomic.Int32
+	cmd    *exec.Cmd
+	stdout io.ReadCloser
+	target string
 }
 
 // NewStreamRecorder creates a recorder for raw PCM streaming.
 func NewStreamRecorder(target string) *StreamRecorder {
-	return &StreamRecorder{target: target}
+	r := &StreamRecorder{target: target}
+	r.state.Store(int32(stateIdle))
+	return r
 }
 
 // SetTarget changes the recording target device.
@@ -43,8 +56,8 @@ func (r *StreamRecorder) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.running {
-		return fmt.Errorf("already recording")
+	if recorderState(r.state.Load()) != stateIdle {
+		return fmt.Errorf("already recording or stopping")
 	}
 
 	args := []string{
@@ -68,27 +81,40 @@ func (r *StreamRecorder) Start() error {
 	}
 
 	if err := r.cmd.Start(); err != nil {
+		r.stdout = nil
 		return fmt.Errorf("start pw-record: %w", err)
 	}
 
-	r.running = true
+	r.state.Store(int32(stateRunning))
 	return nil
 }
 
 // ReadChunk reads exactly n float32 samples from the stream.
 // Blocks until all samples are available or an error occurs.
+// Returns error if recorder is stopped during read.
 func (r *StreamRecorder) ReadChunk(n int) ([]float32, error) {
-	r.mu.Lock()
-	if !r.running {
-		r.mu.Unlock()
+	// Check state atomically without holding lock
+	if recorderState(r.state.Load()) != stateRunning {
 		return nil, fmt.Errorf("not recording")
 	}
+
+	// Get stdout reference while holding lock
+	r.mu.Lock()
 	stdout := r.stdout
 	r.mu.Unlock()
+
+	// Check stdout is valid (may have been cleared by Stop)
+	if stdout == nil {
+		return nil, fmt.Errorf("recorder stopped")
+	}
 
 	buf := make([]byte, n*4)
 	_, err := io.ReadFull(stdout, buf)
 	if err != nil {
+		// Check if we're stopping (expected error)
+		if recorderState(r.state.Load()) != stateRunning {
+			return nil, fmt.Errorf("recorder stopped")
+		}
 		return nil, fmt.Errorf("read audio: %w", err)
 	}
 
@@ -102,20 +128,40 @@ func (r *StreamRecorder) ReadChunk(n int) ([]float32, error) {
 }
 
 // Stop ends the recording stream and cleans up.
+// Safe to call multiple times.
 func (r *StreamRecorder) Stop() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if !r.running {
+	// Atomically transition to stopping state
+	if !r.state.CompareAndSwap(int32(stateRunning), int32(stateStopping)) {
+		// Already stopped or stopping
 		return
 	}
 
-	r.running = false
-	if r.cmd.Process != nil {
-		r.cmd.Process.Kill()
+	r.mu.Lock()
+	cmd := r.cmd
+	stdout := r.stdout
+	r.stdout = nil // Clear to signal ReadChunk
+	r.mu.Unlock()
+
+	// Kill process first (unblocks any pending reads)
+	if cmd != nil && cmd.Process != nil {
+		cmd.Process.Kill()
 	}
-	if r.stdout != nil {
-		r.stdout.Close()
+
+	// Close stdout (safe even if already closed by process exit)
+	if stdout != nil {
+		stdout.Close()
 	}
-	r.cmd.Wait()
+
+	// Wait for process to exit (don't hold lock)
+	if cmd != nil {
+		cmd.Wait()
+	}
+
+	// Transition to idle
+	r.state.Store(int32(stateIdle))
+}
+
+// IsRunning returns true if the recorder is currently streaming.
+func (r *StreamRecorder) IsRunning() bool {
+	return recorderState(r.state.Load()) == stateRunning
 }
