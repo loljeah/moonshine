@@ -215,6 +215,147 @@ func removeFillers(text string) string {
 	return strings.TrimSpace(result)
 }
 
+// autoPunctuation adds punctuation based on speech patterns.
+// Adds periods at natural sentence boundaries (long pauses/breaths).
+// Adds question marks when the sentence ends with interrogative words/patterns.
+func autoPunctuation(text string) string {
+	if text == "" {
+		return text
+	}
+
+	// If text already ends with punctuation, leave it alone
+	lastChar := text[len(text)-1]
+	if lastChar == '.' || lastChar == '?' || lastChar == '!' || lastChar == ',' {
+		return text
+	}
+
+	// Check for question patterns (case-insensitive)
+	lower := strings.ToLower(text)
+
+	// Question word at start
+	questionStarters := []string{
+		"what ", "where ", "when ", "why ", "who ", "whom ", "whose ",
+		"which ", "how ", "is ", "are ", "was ", "were ", "do ", "does ",
+		"did ", "can ", "could ", "will ", "would ", "should ", "shall ",
+		"may ", "might ", "have ", "has ", "had ", "am ",
+	}
+	for _, q := range questionStarters {
+		if strings.HasPrefix(lower, q) {
+			return text + "?"
+		}
+	}
+
+	// "... or not" pattern suggests a question
+	if strings.HasSuffix(lower, " or not") {
+		return text + "?"
+	}
+
+	// Tag questions at the end
+	tagPatterns := []string{
+		"right", "isn't it", "aren't they", "don't you", "doesn't it",
+		"won't it", "can't you", "couldn't it", "shouldn't we", "huh",
+	}
+	for _, tag := range tagPatterns {
+		if strings.HasSuffix(lower, " "+tag) || lower == tag {
+			return text + "?"
+		}
+	}
+
+	// Default: add period
+	return text + "."
+}
+
+// numberWords maps spoken number words to their digit equivalents.
+var numberWords = map[string]string{
+	"zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+	"five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+	"ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+	"fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+	"eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
+	"forty": "40", "fifty": "50", "sixty": "60", "seventy": "70",
+	"eighty": "80", "ninety": "90", "hundred": "100", "thousand": "1000",
+	"million": "1000000", "billion": "1000000000",
+}
+
+// convertNumbersToDigits converts spelled-out numbers to digits.
+// "twenty three" -> "23", "one hundred" -> "100"
+func convertNumbersToDigits(text string) string {
+	words := strings.Fields(text)
+	result := make([]string, 0, len(words))
+
+	i := 0
+	for i < len(words) {
+		word := strings.ToLower(strings.Trim(words[i], ".,!?;:"))
+		originalWord := words[i]
+
+		// Check if this word is a number word
+		if _, isNum := numberWords[word]; isNum {
+			// Collect consecutive number words
+			numWords := []string{word}
+			j := i + 1
+			for j < len(words) {
+				nextWord := strings.ToLower(strings.Trim(words[j], ".,!?;:"))
+				if _, ok := numberWords[nextWord]; ok {
+					numWords = append(numWords, nextWord)
+					j++
+				} else {
+					break
+				}
+			}
+
+			// Convert the number words to a single number
+			num := parseNumberWords(numWords)
+			result = append(result, fmt.Sprintf("%d", num))
+			i = j
+		} else {
+			result = append(result, originalWord)
+			i++
+		}
+	}
+
+	return strings.Join(result, " ")
+}
+
+// parseNumberWords converts a sequence of number words to an integer.
+func parseNumberWords(words []string) int {
+	if len(words) == 0 {
+		return 0
+	}
+
+	total := 0
+	current := 0
+
+	for _, word := range words {
+		val, _ := numberWords[word]
+		n := 0
+		fmt.Sscanf(val, "%d", &n)
+
+		switch {
+		case n == 100:
+			if current == 0 {
+				current = 1
+			}
+			current *= 100
+		case n == 1000:
+			if current == 0 {
+				current = 1
+			}
+			total += current * 1000
+			current = 0
+		case n >= 1000000:
+			if current == 0 {
+				current = 1
+			}
+			total += current * n
+			current = 0
+		default:
+			current += n
+		}
+	}
+
+	return total + current
+}
+
 // autoCapitalize capitalizes the first character and after sentence-ending punctuation.
 // Also capitalizes standalone "i" to "I".
 func autoCapitalize(text string) string {
@@ -243,6 +384,36 @@ func autoCapitalize(text string) string {
 	}
 
 	return string(runes)
+}
+
+// processText applies the full text processing pipeline based on config settings.
+func (d *Daemon) processText(text string) string {
+	// 1. Remove filler words (um, uh, etc.)
+	if d.cfg.FillerRemoval() {
+		text = removeFillers(text)
+	}
+
+	// 2. Expand voice commands (new line, period, etc.)
+	if d.cfg.VoiceCommands() {
+		text = expandVoiceCommands(text)
+	}
+
+	// 3. Convert spoken numbers to digits
+	if d.cfg.NumberFormat() == "digits" {
+		text = convertNumbersToDigits(text)
+	}
+
+	// 4. Add automatic punctuation
+	if d.cfg.AutoPunctuation() {
+		text = autoPunctuation(text)
+	}
+
+	// 5. Auto-capitalize (after punctuation is added)
+	if d.cfg.AutoCapitalize() {
+		text = autoCapitalize(text)
+	}
+
+	return text
 }
 
 // logTranscription appends a timestamped transcription to the history file
@@ -489,10 +660,8 @@ func (d *Daemon) Toggle() (string, error) {
 		}
 		text := strings.Join(parts, " ")
 
-		// Apply text processing pipeline
-		text = removeFillers(text)
-		text = expandVoiceCommands(text)
-		text = autoCapitalize(text)
+		// Apply text processing pipeline based on config
+		text = d.processText(text)
 
 		d.mu.Lock()
 		d.state = StateIdle
@@ -852,10 +1021,8 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 			}
 
 			if line.IsComplete && line.Text != "" {
-				// Apply text processing pipeline
-				text := removeFillers(line.Text)
-				text = expandVoiceCommands(text)
-				text = autoCapitalize(text)
+				// Apply text processing pipeline based on config
+				text := d.processText(line.Text)
 
 				// Get current output mode
 				d.mu.Lock()

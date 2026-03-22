@@ -191,6 +191,39 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "ERR freespeech on|off|toggle, got %s\n", args[0])
 		}
 
+	case "settings":
+		if len(args) == 0 {
+			// Return all settings
+			all := s.daemon.cfg.All()
+			var lines []string
+			for k, v := range all {
+				lines = append(lines, k+"="+v)
+			}
+			if len(lines) == 0 {
+				fmt.Fprintln(conn, "OK (no settings)")
+			} else {
+				fmt.Fprintf(conn, "OK %s\n", strings.Join(lines, "\n"))
+			}
+			return
+		}
+		// Get or set a specific setting
+		if len(args) == 1 {
+			// Get setting
+			key := strings.ToUpper(args[0])
+			val := s.daemon.cfg.Get(key, "")
+			if val == "" {
+				fmt.Fprintf(conn, "OK %s=(unset)\n", key)
+			} else {
+				fmt.Fprintf(conn, "OK %s=%s\n", key, val)
+			}
+		} else {
+			// Set setting
+			key := strings.ToUpper(args[0])
+			val := strings.Join(args[1:], " ")
+			s.daemon.cfg.Set(key, val)
+			fmt.Fprintf(conn, "OK %s=%s\n", key, val)
+		}
+
 	case "quit":
 		fmt.Fprintln(conn, "OK")
 		close(s.QuitCh)

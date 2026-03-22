@@ -76,3 +76,48 @@ func (c *Config) Device() string {
 func (c *Config) Language() string {
 	return c.Get("LANGUAGE", "en")
 }
+
+// AutoPunctuation returns whether to auto-insert punctuation.
+func (c *Config) AutoPunctuation() bool {
+	return c.Get("AUTO_PUNCTUATION", "on") == "on"
+}
+
+// NumberFormat returns "digits" to convert "twenty three" -> "23", or "words" to keep as-is.
+func (c *Config) NumberFormat() string {
+	return c.Get("NUMBER_FORMAT", "words")
+}
+
+// FillerRemoval returns whether to remove filler words (um, uh, etc).
+func (c *Config) FillerRemoval() bool {
+	return c.Get("FILLER_REMOVAL", "on") == "on"
+}
+
+// VoiceCommands returns whether to expand voice commands (new line, period, etc).
+func (c *Config) VoiceCommands() bool {
+	return c.Get("VOICE_COMMANDS", "on") == "on"
+}
+
+// AutoCapitalize returns whether to auto-capitalize sentences.
+func (c *Config) AutoCapitalize() bool {
+	return c.Get("AUTO_CAPITALIZE", "on") == "on"
+}
+
+// GetBool returns a boolean config value.
+func (c *Config) GetBool(key string, defaultVal bool) bool {
+	def := "off"
+	if defaultVal {
+		def = "on"
+	}
+	return c.Get(key, def) == "on"
+}
+
+// All returns a copy of all config values.
+func (c *Config) All() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	result := make(map[string]string, len(c.values))
+	for k, v := range c.values {
+		result[k] = v
+	}
+	return result
+}
