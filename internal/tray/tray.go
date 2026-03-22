@@ -18,9 +18,10 @@ type Tray struct {
 	// Menu items we need to update
 	mStatus      *systray.MenuItem
 	mEnabled     *systray.MenuItem // Master enable/disable toggle
-	mClipboard   *systray.MenuItem
-	mType        *systray.MenuItem
-	mFreeSpeech  *systray.MenuItem
+	mFreeSpeech  *systray.MenuItem // Trigger: always listening
+	mPushToTalk  *systray.MenuItem // Trigger: press to talk
+	mClipboard   *systray.MenuItem // Output: clipboard
+	mType        *systray.MenuItem // Output: type
 	mDevices     []*systray.MenuItem
 	mDeviceSub   *systray.MenuItem
 
@@ -49,18 +50,21 @@ func (t *Tray) onReady() {
 	systray.AddSeparator()
 
 	// Master enable/disable toggle
-	t.mEnabled = systray.AddMenuItem("✓ Enabled", "Disable to pause all speech recognition")
-	t.mEnabled.Check()
+	t.mEnabled = systray.AddMenuItem("🟢 Enabled", "Click to disable speech recognition")
 
-	// Free Speech toggle (checkbox, independent of output mode)
-	t.mFreeSpeech = systray.AddMenuItem("🎤 Always Listening", "Continuous speech-to-text (toggle on/off)")
+	systray.AddSeparator()
+
+	// Trigger mode — how speech is captured
+	t.mFreeSpeech = systray.AddMenuItem("● Always Listening", "Continuous speech-to-text")
+	t.mPushToTalk = systray.AddMenuItem("○ Press to Talk", "Button-triggered recording")
 
 	systray.AddSeparator()
 
 	// Output destination — where transcribed text goes
-	t.mClipboard = systray.AddMenuItem("📋 → Clipboard", "Send transcriptions to clipboard")
-	t.mType = systray.AddMenuItem("⌨ → Type", "Type transcriptions into focused window")
-	t.mClipboard.Check()
+	t.mClipboard = systray.AddMenuItem("○ Clipboard", "Copy transcriptions to clipboard")
+	t.mType = systray.AddMenuItem("● Type", "Type into focused window")
+	t.syncModeChecks(daemon.ModeType)
+	t.syncTriggerChecks(true) // default to FreeSpeech
 
 	systray.AddSeparator()
 
@@ -108,6 +112,16 @@ func (t *Tray) menuLoop(mRefresh, mQuit *systray.MenuItem) {
 			t.d.SetEnabled(!enabled)
 			t.syncEnabledCheck(!enabled)
 
+		case <-t.mFreeSpeech.ClickedCh:
+			// Select Always Listening trigger
+			t.d.SetFreeSpeech(true)
+			t.syncTriggerChecks(true)
+
+		case <-t.mPushToTalk.ClickedCh:
+			// Select Press to Talk trigger
+			t.d.SetFreeSpeech(false)
+			t.syncTriggerChecks(false)
+
 		case <-t.mClipboard.ClickedCh:
 			t.d.SetMode(daemon.ModeClipboard)
 			t.syncModeChecks(daemon.ModeClipboard)
@@ -115,11 +129,6 @@ func (t *Tray) menuLoop(mRefresh, mQuit *systray.MenuItem) {
 		case <-t.mType.ClickedCh:
 			t.d.SetMode(daemon.ModeType)
 			t.syncModeChecks(daemon.ModeType)
-
-		case <-t.mFreeSpeech.ClickedCh:
-			// Toggle FreeSpeech on/off
-			enabled := t.d.GetFreeSpeech()
-			t.d.SetFreeSpeech(!enabled)
 
 		case <-mRefresh.ClickedCh:
 			t.refreshDevices()
@@ -132,37 +141,39 @@ func (t *Tray) menuLoop(mRefresh, mQuit *systray.MenuItem) {
 }
 
 func (t *Tray) syncModeChecks(m daemon.OutputMode) {
-	t.mClipboard.Uncheck()
-	t.mType.Uncheck()
 	switch m {
 	case daemon.ModeClipboard:
-		t.mClipboard.Check()
+		t.mClipboard.SetTitle("● Clipboard")
+		t.mType.SetTitle("○ Type")
 	case daemon.ModeType:
-		t.mType.Check()
+		t.mClipboard.SetTitle("○ Clipboard")
+		t.mType.SetTitle("● Type")
 	}
 }
 
-func (t *Tray) syncFreeSpeechCheck(enabled bool) {
-	if enabled {
-		t.mFreeSpeech.Check()
+func (t *Tray) syncTriggerChecks(freeSpeech bool) {
+	if freeSpeech {
+		t.mFreeSpeech.SetTitle("● Always Listening")
+		t.mPushToTalk.SetTitle("○ Press to Talk")
 	} else {
-		t.mFreeSpeech.Uncheck()
+		t.mFreeSpeech.SetTitle("○ Always Listening")
+		t.mPushToTalk.SetTitle("● Press to Talk")
 	}
 }
 
 func (t *Tray) syncEnabledCheck(enabled bool) {
 	if enabled {
-		t.mEnabled.SetTitle("✓ Enabled")
-		t.mEnabled.Check()
+		t.mEnabled.SetTitle("🟢 Enabled")
 		// Re-enable other menu items
 		t.mFreeSpeech.Enable()
+		t.mPushToTalk.Enable()
 		t.mClipboard.Enable()
 		t.mType.Enable()
 	} else {
-		t.mEnabled.SetTitle("✗ Disabled")
-		t.mEnabled.Uncheck()
+		t.mEnabled.SetTitle("🔴 Disabled")
 		// Disable other menu items (greyed out)
 		t.mFreeSpeech.Disable()
+		t.mPushToTalk.Disable()
 		t.mClipboard.Disable()
 		t.mType.Disable()
 	}
@@ -302,11 +313,11 @@ func (t *Tray) watchState() {
 		t.mStatus.SetTitle(statusIcon + " " + statusText)
 		systray.SetTooltip(tooltip)
 
-		// Sync radio checks with current mode
+		// Sync output mode selection
 		t.syncModeChecks(sc.Mode)
 
-		// Sync FreeSpeech toggle checkbox
-		t.syncFreeSpeechCheck(sc.FreeSpeech)
+		// Sync trigger mode selection
+		t.syncTriggerChecks(sc.FreeSpeech)
 
 		// Refresh history when returning to idle (transcription completed)
 		if sc.State == daemon.StateIdle || sc.State == daemon.StateListening {
