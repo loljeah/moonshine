@@ -105,6 +105,19 @@ func resolveModelPath(language string) string {
 		modelName = "base-ja"
 	}
 
+	// Check MOONSHINE_MODEL_PATH env var first (for Nix flake or custom paths)
+	if envPath := os.Getenv("MOONSHINE_MODEL_PATH"); envPath != "" {
+		path := filepath.Join(envPath, modelName, "quantized")
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+		path = filepath.Join(envPath, modelName)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	// Check default cache directory
 	path := filepath.Join(cacheDir, modelName, "quantized")
 	if _, err := os.Stat(path); err == nil {
 		return path
@@ -115,6 +128,6 @@ func resolveModelPath(language string) string {
 		return path
 	}
 
-	log.Fatalf("model not found at %s — run moonshine once with Python to download it", path)
+	log.Fatalf("model not found at %s — run moonshine once with Python to download it, or set MOONSHINE_MODEL_PATH", path)
 	return ""
 }
