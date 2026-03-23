@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,13 +20,38 @@ type Config struct {
 }
 
 // Load reads the config file at path. Missing file is not an error.
+// Path must be within the user's home directory or /tmp for security.
 func Load(path string) (*Config, error) {
+	// Validate path is within allowed directories
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid config path: %w", err)
+	}
+	absPath = filepath.Clean(absPath)
+
+	home := os.Getenv("HOME")
+	allowedPrefixes := []string{
+		filepath.Clean(home),
+		"/tmp",
+	}
+
+	allowed := false
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(absPath, prefix+string(filepath.Separator)) || absPath == prefix {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, fmt.Errorf("config path must be within home directory or /tmp")
+	}
+
 	c := &Config{
-		path:   path,
+		path:   absPath,
 		values: make(map[string]string),
 	}
 
-	f, err := os.Open(path)
+	f, err := os.Open(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return c, nil

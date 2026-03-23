@@ -811,9 +811,19 @@ func (d *Daemon) GetEnabled() bool {
 	return d.enabled
 }
 
+// writeStatus atomically writes the current state to the status file.
+// Uses write-to-temp-then-rename for atomic updates.
 func (d *Daemon) writeStatus() {
 	path := filepath.Join(stateDir, "status")
-	os.WriteFile(path, []byte(d.state.String()), 0o600) // Owner-only
+	tmpPath := path + ".tmp"
+
+	// Write to temp file first
+	if err := os.WriteFile(tmpPath, []byte(d.state.String()+"\n"), 0o600); err != nil {
+		return
+	}
+
+	// Atomic rename
+	os.Rename(tmpPath, path)
 }
 
 func (d *Daemon) notify(s State) {

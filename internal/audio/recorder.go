@@ -6,6 +6,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
+)
+
+const (
+	// stopTimeout is the maximum time to wait for graceful shutdown
+	// before forcing kill
+	stopTimeout = 3 * time.Second
 )
 
 const (
@@ -77,6 +84,7 @@ func (r *Recorder) Start() error {
 
 // Stop ends recording, waits for pw-record to flush, and returns the
 // parsed PCM float32 audio. The temporary WAV file is cleaned up.
+// Uses timeout to prevent hanging if pw-record doesn't respond to SIGINT.
 func (r *Recorder) Stop() ([]float32, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -91,7 +99,21 @@ func (r *Recorder) Stop() ([]float32, error) {
 	if r.cmd.Process != nil {
 		r.cmd.Process.Signal(os.Interrupt)
 	}
-	r.cmd.Wait()
+
+	// Wait with timeout, force kill if needed
+	done := make(chan error, 1)
+	go func() { done <- r.cmd.Wait() }()
+
+	select {
+	case <-done:
+		// Process exited normally
+	case <-time.After(stopTimeout):
+		// Force kill if graceful shutdown didn't work
+		if r.cmd.Process != nil {
+			r.cmd.Process.Kill()
+		}
+		<-done // Wait for kill to complete
+	}
 
 	// Parse the WAV file pw-record wrote
 	wavPath := filepath.Join(tmpDir, "audio_tmp.wav")

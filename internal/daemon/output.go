@@ -2,20 +2,46 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 )
 
+const (
+	// commandTimeout prevents hangs from unresponsive external tools
+	commandTimeout = 10 * time.Second
+)
+
 // CopyToClipboard copies text to the Wayland clipboard via wl-copy.
+// Returns error if the operation fails or times out.
 func CopyToClipboard(text string) error {
-	cmd := exec.Command("wl-copy")
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "wl-copy")
 	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("wl-copy timed out")
+		}
+		return fmt.Errorf("wl-copy: %w", err)
+	}
+	return nil
+}
+
+// validSpecialKeys is the allowlist of valid wtype key names.
+// This prevents potential injection via transcribed {KEY} placeholders.
+var validSpecialKeys = map[string]bool{
+	"Up": true, "Down": true, "Left": true, "Right": true,
+	"BackSpace": true, "Delete": true, "Tab": true, "Return": true,
+	"Home": true, "End": true, "Page_Up": true, "Page_Down": true,
+	"Escape": true, "space": true,
 }
 
 // TypeText types text into the focused window via wtype.
 // Supports {KEY} placeholders for special keys (e.g., {Up}, {Down}, {Left}, {Right}).
+// Only allowlisted key names are accepted to prevent injection.
 func TypeText(text string) error {
 	// Parse text for {KEY} placeholders and build wtype args
 	var args []string
@@ -28,7 +54,13 @@ func TypeText(text string) error {
 			end := strings.Index(text[i:], "}")
 			if end > 1 {
 				key := text[i+1 : i+end]
-				args = append(args, "-k", key)
+				// Only allow known safe key names
+				if validSpecialKeys[key] {
+					args = append(args, "-k", key)
+				} else {
+					// Unknown key - output literal text
+					args = append(args, text[i:i+end+1])
+				}
 				i += end + 1
 				continue
 			}
@@ -52,12 +84,25 @@ func TypeText(text string) error {
 		return nil
 	}
 
-	return exec.Command("wtype", args...).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	if err := exec.CommandContext(ctx, "wtype", args...).Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("wtype timed out")
+		}
+		return fmt.Errorf("wtype: %w", err)
+	}
+	return nil
 }
 
 // Notify sends a desktop notification via notify-send.
+// Non-blocking with timeout to prevent hangs.
 func Notify(title, body string) error {
-	return exec.Command("notify-send",
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return exec.CommandContext(ctx, "notify-send",
 		"-a", "Moonshine",
 		"-i", "microphone-sensitivity-high",
 		title, body,

@@ -6,8 +6,16 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"moonshine-daemon/internal/daemon"
+)
+
+const (
+	// connectTimeout prevents hanging if socket exists but daemon is stuck
+	connectTimeout = 5 * time.Second
+	// readTimeout prevents hanging on unresponsive daemon
+	readTimeout = 30 * time.Second
 )
 
 func main() {
@@ -23,13 +31,18 @@ func main() {
 	command := strings.Join(os.Args[1:], " ")
 	isMultiLine := strings.HasPrefix(command, "logs") || strings.HasPrefix(command, "devices")
 
-	conn, err := net.Dial("unix", daemon.SocketPath)
+	// Connect with timeout
+	dialer := net.Dialer{Timeout: connectTimeout}
+	conn, err := dialer.Dial("unix", daemon.SocketPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot connect to daemon: %s\n", err)
 		fmt.Fprintln(os.Stderr, "is moonshine-daemon running?")
 		os.Exit(1)
 	}
 	defer conn.Close()
+
+	// Set read deadline
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
 
 	fmt.Fprintln(conn, command)
 

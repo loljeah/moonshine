@@ -1,8 +1,16 @@
 package audio
 
 import (
+	"context"
+	"fmt"
 	"os/exec"
 	"strings"
+	"time"
+)
+
+const (
+	// deviceListTimeout prevents hangs when PipeWire is unresponsive
+	deviceListTimeout = 5 * time.Second
 )
 
 // AudioDevice represents a PipeWire audio source node.
@@ -12,10 +20,17 @@ type AudioDevice struct {
 }
 
 // ListDevices enumerates PipeWire Audio/Source nodes by parsing pw-cli output.
+// Returns error if PipeWire is unavailable or times out.
 func ListDevices() ([]AudioDevice, error) {
-	out, err := exec.Command("pw-cli", "list-objects", "Node").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), deviceListTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "pw-cli", "list-objects", "Node").Output()
 	if err != nil {
-		return nil, err
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("pw-cli timed out (PipeWire may be unresponsive)")
+		}
+		return nil, fmt.Errorf("pw-cli: %w", err)
 	}
 
 	return parseDevices(string(out)), nil
