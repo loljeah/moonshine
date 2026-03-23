@@ -51,7 +51,7 @@ func (r *Recorder) Start() error {
 		return fmt.Errorf("already recording")
 	}
 
-	os.MkdirAll(tmpDir, 0o755)
+	os.MkdirAll(tmpDir, 0o700) // Restrict to owner (audio may be sensitive)
 	os.Remove(tmpWAV)
 
 	args := []string{

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -17,6 +18,8 @@ const (
 	socketReadTimeout = 5 * time.Second
 	// maxCommandLength prevents memory exhaustion from very long commands.
 	maxCommandLength = 4096
+	// maxConcurrentConns limits simultaneous socket connections to prevent DoS.
+	maxConcurrentConns = 10
 )
 
 const SocketPath = "/tmp/moonshine/moonshine.sock"
@@ -26,18 +29,24 @@ type SocketServer struct {
 	listener net.Listener
 	daemon   *Daemon
 	verbose  bool
-	QuitCh   chan struct{} // closed when "quit" command received
+	QuitCh   chan struct{}   // closed when "quit" command received
+	connSem  chan struct{}   // semaphore limiting concurrent connections
 }
 
 // NewSocketServer creates and starts the Unix socket server.
 func NewSocketServer(d *Daemon, verbose bool) (*SocketServer, error) {
 	os.Remove(SocketPath)
 
+	// Set restrictive umask before creating socket to prevent TOCTOU race
+	oldUmask := syscall.Umask(0o077)
 	ln, err := net.Listen("unix", SocketPath)
+	syscall.Umask(oldUmask) // Restore original umask
+
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", SocketPath, err)
 	}
 
+	// Ensure permissions are correct (belt and suspenders)
 	os.Chmod(SocketPath, 0o700)
 
 	s := &SocketServer{
@@ -45,6 +54,7 @@ func NewSocketServer(d *Daemon, verbose bool) (*SocketServer, error) {
 		daemon:   d,
 		verbose:  verbose,
 		QuitCh:   make(chan struct{}),
+		connSem:  make(chan struct{}, maxConcurrentConns), // Limit concurrent connections
 	}
 
 	go s.acceptLoop()
@@ -57,7 +67,21 @@ func (s *SocketServer) acceptLoop() {
 		if err != nil {
 			return
 		}
-		go s.handleConn(conn)
+
+		// Rate limit: acquire semaphore slot (non-blocking check first)
+		select {
+		case s.connSem <- struct{}{}:
+			go func() {
+				defer func() { <-s.connSem }() // Release slot when done
+				s.handleConn(conn)
+			}()
+		default:
+			// Too many connections, reject immediately
+			conn.Close()
+			if s.verbose {
+				log.Printf("socket: rejected connection (too many concurrent)")
+			}
+		}
 	}
 }
 
@@ -219,6 +243,13 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 		fmt.Fprintf(conn, "OK\n%s\n", strings.Join(recent, "\n"))
 
 	case "settings":
+		// Valid config keys (for validation)
+		validKeys := map[string]bool{
+			"DEVICE": true, "LANGUAGE": true, "AUTO_PUNCTUATION": true,
+			"AUTO_CAPITALIZE": true, "FILLER_REMOVAL": true,
+			"VOICE_COMMANDS": true, "NUMBER_FORMAT": true,
+		}
+
 		if len(args) == 0 {
 			// Return all settings
 			all := s.daemon.cfg.All()
@@ -234,9 +265,13 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 			return
 		}
 		// Get or set a specific setting
+		key := strings.ToUpper(args[0])
+		if !validKeys[key] {
+			fmt.Fprintf(conn, "ERR unknown setting: %s (valid: DEVICE, LANGUAGE, AUTO_PUNCTUATION, AUTO_CAPITALIZE, FILLER_REMOVAL, VOICE_COMMANDS, NUMBER_FORMAT)\n", key)
+			return
+		}
 		if len(args) == 1 {
 			// Get setting
-			key := strings.ToUpper(args[0])
 			val := s.daemon.cfg.Get(key, "")
 			if val == "" {
 				fmt.Fprintf(conn, "OK %s=(unset)\n", key)
@@ -245,7 +280,6 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 			}
 		} else {
 			// Set setting
-			key := strings.ToUpper(args[0])
 			val := strings.Join(args[1:], " ")
 			s.daemon.cfg.Set(key, val)
 			fmt.Fprintf(conn, "OK %s=%s\n", key, val)

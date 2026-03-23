@@ -16,22 +16,49 @@ import (
 	"moonshine-daemon/internal/tray"
 )
 
+const (
+	// maxLogSize is the maximum log file size before rotation (10 MB)
+	maxLogSize = 10 * 1024 * 1024
+)
+
 // logPath returns the path to the daemon log file.
 func logPath() string {
 	return filepath.Join(os.Getenv("HOME"), ".local", "share", "moonshine", "daemon.log")
 }
 
+// rotateLogIfNeeded checks if the log file exceeds maxLogSize and rotates it.
+// Keeps one backup (.old) to preserve recent history.
+func rotateLogIfNeeded(path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return // File doesn't exist or can't be read, nothing to rotate
+	}
+
+	if info.Size() < maxLogSize {
+		return // File is small enough
+	}
+
+	// Rotate: remove old backup, rename current to .old
+	oldPath := path + ".old"
+	os.Remove(oldPath)
+	os.Rename(path, oldPath)
+}
+
 // setupLogging configures logging to write to both stderr and a persistent log file.
+// Implements log rotation to prevent unbounded growth.
 // Returns a cleanup function to close the log file.
 func setupLogging() func() {
 	log.SetPrefix("moonshine: ")
 	log.SetFlags(log.Ldate | log.Ltime)
 
 	path := logPath()
-	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.MkdirAll(filepath.Dir(path), 0o700) // Restrict directory (may contain sensitive logs)
 
-	// Open log file (append mode, create if not exists)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// Rotate log if too large
+	rotateLogIfNeeded(path)
+
+	// Open log file (append mode, create if not exists, owner-only permissions)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		log.Printf("warning: could not open log file: %s", err)
 		return func() {}

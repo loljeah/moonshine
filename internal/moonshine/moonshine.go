@@ -96,7 +96,11 @@ import (
 	"unsafe"
 )
 
-const headerVersion = 20000
+const (
+	headerVersion = 20000
+	// transcribeTimeout prevents deadlock if C library hangs
+	transcribeTimeout = 60 * time.Second
+)
 
 type ModelArch uint32
 
@@ -279,18 +283,32 @@ func parseStreamTranscript(t *C.transcript_t) []StreamTranscriptLine {
 }
 
 // Transcribe sends audio PCM data for transcription. Thread-safe.
+// Returns error if the transcriber is busy or unresponsive.
 func (t *Transcriber) Transcribe(pcm []float32, sampleRate int) ([]TranscriptLine, error) {
 	type result struct {
 		lines []TranscriptLine
 		err   error
 	}
 	ch := make(chan result, 1)
-	t.funcCh <- func() {
+	fn := func() {
 		lines, err := t.doTranscribe(pcm, sampleRate)
 		ch <- result{lines, err}
 	}
-	r := <-ch
-	return r.lines, r.err
+
+	// Send with timeout to prevent deadlock if goroutine is stuck
+	select {
+	case t.funcCh <- fn:
+	case <-time.After(transcribeTimeout):
+		return nil, fmt.Errorf("transcriber timeout (unresponsive)")
+	}
+
+	// Wait for result with timeout
+	select {
+	case r := <-ch:
+		return r.lines, r.err
+	case <-time.After(transcribeTimeout):
+		return nil, fmt.Errorf("transcription timeout")
+	}
 }
 
 // Stream wraps a Moonshine streaming session. All methods are thread-safe
@@ -307,7 +325,7 @@ func (t *Transcriber) CreateStream() (*Stream, error) {
 		err    error
 	}
 	ch := make(chan result, 1)
-	t.funcCh <- func() {
+	fn := func() {
 		h := C.moonshine_create_stream(t.handle, 0)
 		if h < 0 {
 			errStr := C.moonshine_error_to_string(h)
@@ -316,11 +334,22 @@ func (t *Transcriber) CreateStream() (*Stream, error) {
 			ch <- result{handle: h}
 		}
 	}
-	r := <-ch
-	if r.err != nil {
-		return nil, r.err
+
+	select {
+	case t.funcCh <- fn:
+	case <-time.After(transcribeTimeout):
+		return nil, fmt.Errorf("create stream timeout")
 	}
-	return &Stream{t: t, handle: r.handle}, nil
+
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return &Stream{t: t, handle: r.handle}, nil
+	case <-time.After(transcribeTimeout):
+		return nil, fmt.Errorf("create stream timeout")
+	}
 }
 
 // Start begins the streaming session.
@@ -374,7 +403,7 @@ func (s *Stream) AddAudio(pcm []float32, sampleRate int) ([]StreamTranscriptLine
 		err   error
 	}
 	ch := make(chan result, 1)
-	s.t.funcCh <- func() {
+	fn := func() {
 		// Add audio to stream
 		rc := C.moonshine_transcribe_add_audio_to_stream(
 			s.t.handle,
@@ -406,8 +435,19 @@ func (s *Stream) AddAudio(pcm []float32, sampleRate int) ([]StreamTranscriptLine
 
 		ch <- result{lines: parseStreamTranscript(outTranscript)}
 	}
-	r := <-ch
-	return r.lines, r.err
+
+	select {
+	case s.t.funcCh <- fn:
+	case <-time.After(transcribeTimeout):
+		return nil, fmt.Errorf("add audio timeout")
+	}
+
+	select {
+	case r := <-ch:
+		return r.lines, r.err
+	case <-time.After(transcribeTimeout):
+		return nil, fmt.Errorf("transcribe timeout")
+	}
 }
 
 // Close frees the transcriber resources.

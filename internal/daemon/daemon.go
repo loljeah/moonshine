@@ -188,28 +188,29 @@ func expandVoiceCommands(text string) string {
 	return result
 }
 
+// Pre-compiled regexes for filler removal (avoid recompilation on every call)
+var (
+	fillerRegexes = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bum\b`),
+		regexp.MustCompile(`(?i)\buh\b`),
+		regexp.MustCompile(`(?i)\ber\b`),
+		regexp.MustCompile(`(?i)\bah\b`),
+		regexp.MustCompile(`(?i)\byou know\b`),
+		regexp.MustCompile(`(?i)\bi mean\b`),
+	}
+	multiSpaceRegex = regexp.MustCompile(`\s+`)
+)
+
 // removeFillers removes common filler words and phrases from transcribed text.
 // Uses word boundaries to avoid matching fillers inside valid words.
 func removeFillers(text string) string {
-	// Compile patterns for filler words/phrases (case-insensitive, whole words only)
-	fillers := []string{
-		`\bum\b`,
-		`\buh\b`,
-		`\ber\b`,
-		`\bah\b`,
-		`\byou know\b`,
-		`\bi mean\b`,
-	}
-
 	result := text
-	for _, pattern := range fillers {
-		re := regexp.MustCompile(`(?i)` + pattern)
+	for _, re := range fillerRegexes {
 		result = re.ReplaceAllString(result, "")
 	}
 
 	// Collapse multiple spaces into single space
-	spaceRe := regexp.MustCompile(`\s+`)
-	result = spaceRe.ReplaceAllString(result, " ")
+	result = multiSpaceRegex.ReplaceAllString(result, " ")
 
 	// Trim leading/trailing whitespace
 	return strings.TrimSpace(result)
@@ -356,6 +357,9 @@ func parseNumberWords(words []string) int {
 	return total + current
 }
 
+// Pre-compiled regex for capitalizing standalone "i"
+var standaloneIRegex = regexp.MustCompile(`\bi\b`)
+
 // autoCapitalize capitalizes the first character and after sentence-ending punctuation.
 // Also capitalizes standalone "i" to "I".
 func autoCapitalize(text string) string {
@@ -364,8 +368,7 @@ func autoCapitalize(text string) string {
 	}
 
 	// Capitalize standalone "i" -> "I"
-	iRe := regexp.MustCompile(`\bi\b`)
-	text = iRe.ReplaceAllString(text, "I")
+	text = standaloneIRegex.ReplaceAllString(text, "I")
 
 	// Convert to runes for proper Unicode handling
 	runes := []rune(text)
@@ -421,10 +424,10 @@ func (d *Daemon) processText(text string) string {
 func (d *Daemon) logTranscription(mode OutputMode, text string) {
 	now := time.Now()
 
-	// Append to file
+	// Append to file (restricted permissions - may contain sensitive transcriptions)
 	path := historyPath()
-	os.MkdirAll(filepath.Dir(path), 0o755)
-	if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 		fmt.Fprintf(f, "[%s] [%s] %s\n", now.Format("2006-01-02 15:04:05"), mode, text)
 		f.Close()
 	}
@@ -553,7 +556,7 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 
 	d.loadHistory()
 
-	os.MkdirAll(stateDir, 0o755)
+	os.MkdirAll(stateDir, 0o700) // Restrict to owner only (contains status info)
 	d.writeStatus()
 
 	// Start USB headset keep-alive loop
@@ -810,7 +813,7 @@ func (d *Daemon) GetEnabled() bool {
 
 func (d *Daemon) writeStatus() {
 	path := filepath.Join(stateDir, "status")
-	os.WriteFile(path, []byte(d.state.String()), 0o644)
+	os.WriteFile(path, []byte(d.state.String()), 0o600) // Owner-only
 }
 
 func (d *Daemon) notify(s State) {
