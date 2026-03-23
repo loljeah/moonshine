@@ -13,6 +13,7 @@ import (
 	"moonshine-daemon/internal/config"
 	"moonshine-daemon/internal/daemon"
 	"moonshine-daemon/internal/moonshine"
+	"moonshine-daemon/internal/transcriber"
 	"moonshine-daemon/internal/tray"
 )
 
@@ -91,18 +92,37 @@ func main() {
 		log.Fatalf("load config: %s", err)
 	}
 
-	// Determine model path and architecture
-	modelPath := resolveModelPath(cfg.Language())
-	arch := moonshine.ArchMediumStreaming
-	if *verbose {
-		log.Printf("model: %s (arch: medium-streaming)", modelPath)
-	}
+	// Determine backend and load transcriber
+	var trans transcriber.Transcriber
+	backend := transcriber.Backend(cfg.Backend())
 
-	// Load transcriber (model stays loaded for entire daemon lifetime)
 	log.Println("loading model...")
-	transcriber, err := moonshine.NewTranscriber(modelPath, arch)
-	if err != nil {
-		log.Fatalf("load transcriber: %s", err)
+	switch backend {
+	case transcriber.BackendWhisper:
+		// Whisper backend for German and other languages
+		whisperModel := cfg.WhisperModel()
+		if whisperModel == "" {
+			whisperModel = resolveWhisperModelPath()
+		}
+		if *verbose {
+			log.Printf("backend: whisper, model: %s, language: %s", whisperModel, cfg.Language())
+		}
+		trans, err = transcriber.NewWhisperTranscriber(whisperModel, cfg.Language(), cfg.Threads())
+		if err != nil {
+			log.Fatalf("load whisper transcriber: %s", err)
+		}
+
+	default:
+		// Moonshine backend (default)
+		modelPath := resolveMoonshineModelPath(cfg.Language())
+		arch := moonshine.ArchMediumStreaming
+		if *verbose {
+			log.Printf("backend: moonshine, model: %s (arch: medium-streaming)", modelPath)
+		}
+		trans, err = transcriber.NewMoonshineTranscriber(modelPath, arch)
+		if err != nil {
+			log.Fatalf("load moonshine transcriber: %s", err)
+		}
 	}
 	log.Println("model loaded")
 
@@ -110,7 +130,7 @@ func main() {
 	soundDir := filepath.Join(os.Getenv("HOME"), ".local", "share", "moonshine", "sounds")
 
 	// Create daemon
-	d := daemon.New(transcriber, cfg, soundDir, *verbose)
+	d := daemon.New(trans, cfg, soundDir, *verbose)
 
 	// Start socket server
 	sock, err := daemon.NewSocketServer(d, *verbose)
@@ -153,7 +173,8 @@ func main() {
 	shutdown()
 }
 
-func resolveModelPath(language string) string {
+// resolveMoonshineModelPath finds the Moonshine model for the given language.
+func resolveMoonshineModelPath(language string) string {
 	home := os.Getenv("HOME")
 	cacheDir := filepath.Join(home, ".cache", "moonshine_voice", "download.moonshine.ai", "model")
 
@@ -190,6 +211,35 @@ func resolveModelPath(language string) string {
 		return path
 	}
 
-	log.Fatalf("model not found at %s — run moonshine once with Python to download it, or set MOONSHINE_MODEL_PATH", path)
+	log.Fatalf("moonshine model not found at %s — run moonshine once with Python to download it, or set MOONSHINE_MODEL_PATH", path)
+	return ""
+}
+
+// resolveWhisperModelPath finds the Whisper model file.
+func resolveWhisperModelPath() string {
+	home := os.Getenv("HOME")
+
+	// Check WHISPER_MODEL_PATH env var first
+	if envPath := os.Getenv("WHISPER_MODEL_PATH"); envPath != "" {
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath
+		}
+	}
+
+	// Check common locations
+	searchPaths := []string{
+		filepath.Join(home, ".cache", "whisper", "ggml-base.bin"),
+		filepath.Join(home, ".cache", "whisper", "ggml-small.bin"),
+		filepath.Join(home, ".local", "share", "whisper", "ggml-base.bin"),
+		"/usr/share/whisper/ggml-base.bin",
+	}
+
+	for _, path := range searchPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	log.Fatalf("whisper model not found — set WHISPER_MODEL_PATH or place model in ~/.cache/whisper/")
 	return ""
 }

@@ -14,7 +14,7 @@ import (
 
 	"moonshine-daemon/internal/audio"
 	"moonshine-daemon/internal/config"
-	"moonshine-daemon/internal/moonshine"
+	"moonshine-daemon/internal/transcriber"
 )
 
 // State represents the daemon's current processing state.
@@ -504,7 +504,7 @@ type Daemon struct {
 	state       State
 	mode        OutputMode
 	enabled     bool // master enable/disable toggle
-	transcriber *moonshine.Transcriber
+	transcriber transcriber.Transcriber
 	recorder    *audio.Recorder
 	cfg         *config.Config
 	soundDir    string
@@ -513,7 +513,7 @@ type Daemon struct {
 	// Free Speech toggle (independent of output mode)
 	freeSpeech     bool // true = always-listening enabled
 	streamRecorder *audio.StreamRecorder
-	stream         *moonshine.Stream
+	stream         transcriber.Stream
 	listenCancel   context.CancelFunc
 	listening      bool
 
@@ -528,7 +528,7 @@ type Daemon struct {
 }
 
 // New creates a Daemon with a loaded transcriber and config.
-func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string, verbose bool) *Daemon {
+func New(trans transcriber.Transcriber, cfg *config.Config, soundDir string, verbose bool) *Daemon {
 	// Resolve target device from config
 	target := ""
 	deviceSearch := cfg.Device()
@@ -546,7 +546,7 @@ func New(transcriber *moonshine.Transcriber, cfg *config.Config, soundDir string
 		state:       StateIdle,
 		mode:        ModeType, // Default to Type mode (not Clipboard)
 		enabled:     true,     // enabled by default
-		transcriber: transcriber,
+		transcriber: trans,
 		recorder:    audio.NewRecorder(target),
 		cfg:         cfg,
 		soundDir:    soundDir,

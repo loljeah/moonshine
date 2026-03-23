@@ -79,7 +79,7 @@
 
           src = ./.;
 
-          vendorHash = "sha256-kHsdGyyXfyn7IZT5GqtZRaf71DleewBwRcGC9Atl2CA=";
+          vendorHash = "sha256-/FkH/3+MhMaOjQPZNghNOFY36FhZbWJVQND47ae0pLM=";
 
           nativeBuildInputs = [ pkgs.pkg-config ];
 

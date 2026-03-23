@@ -128,6 +128,30 @@ func (c *Config) AutoCapitalize() bool {
 	return c.Get("AUTO_CAPITALIZE", "on") == "on"
 }
 
+// Backend returns the transcription backend ("moonshine" or "whisper").
+func (c *Config) Backend() string {
+	return c.Get("BACKEND", "moonshine")
+}
+
+// WhisperModel returns the path to the Whisper model file.
+func (c *Config) WhisperModel() string {
+	return c.Get("WHISPER_MODEL", "")
+}
+
+// Threads returns the number of threads for transcription (Whisper).
+func (c *Config) Threads() int {
+	val := c.Get("THREADS", "4")
+	n := 4
+	fmt.Sscanf(val, "%d", &n)
+	if n < 1 {
+		n = 1
+	}
+	if n > 32 {
+		n = 32
+	}
+	return n
+}
+
 // GetBool returns a boolean config value.
 func (c *Config) GetBool(key string, defaultVal bool) bool {
 	def := "off"
