@@ -259,7 +259,7 @@ func (t *Tray) watchState() {
 	for sc := range t.d.StateCh {
 		// Handle disabled state
 		if !sc.Enabled {
-			systray.SetIcon(IconIdle)
+			systray.SetIcon(IconDisabled)
 			t.mStatus.SetTitle("⏹ Disabled")
 			systray.SetTooltip("Moonshine (disabled)")
 			t.syncEnabledCheck(false)
