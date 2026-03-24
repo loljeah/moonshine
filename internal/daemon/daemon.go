@@ -189,25 +189,76 @@ func expandVoiceCommands(text string) string {
 }
 
 // Pre-compiled regexes for filler removal (avoid recompilation on every call)
+// Organized by category for maintainability and potential future config options.
 var (
-	fillerRegexes = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bum\b`),
-		regexp.MustCompile(`(?i)\buh\b`),
-		regexp.MustCompile(`(?i)\ber\b`),
-		regexp.MustCompile(`(?i)\bah\b`),
+	// Hesitation sounds - safe to always remove, these are pure disfluencies
+	// Uses + quantifier to handle extended sounds (e.g., "uhhhhh", "ummmm")
+	hesitationFillers = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bu+h+\b`),     // uh, uhh, uhhh
+		regexp.MustCompile(`(?i)\bu+m+\b`),     // um, umm, ummm
+		regexp.MustCompile(`(?i)\be+r+m?\b`),   // er, err, erm, errm
+		regexp.MustCompile(`(?i)\ba+h+\b`),     // ah, ahh, ahhh
+		regexp.MustCompile(`(?i)\bo+h+\b`),     // oh, ohh (standalone hesitation)
+		regexp.MustCompile(`(?i)\be+h+\b`),     // eh, ehh
+		regexp.MustCompile(`(?i)\bh+m+\b`),     // hm, hmm, hmmm
+		regexp.MustCompile(`(?i)\bm+h+m+\b`),   // mhm, mhmm (listening sound)
+	}
+
+	// Agreement/acknowledgment sounds - also safe to remove in dictation context
+	agreementFillers = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\buh[- ]?huh\b`), // uh-huh, uh huh
+		regexp.MustCompile(`(?i)\buh[- ]?uh\b`),  // uh-uh (negative)
+		regexp.MustCompile(`(?i)\bnuh[- ]?uh\b`), // nuh-uh (emphatic negative)
+		regexp.MustCompile(`(?i)\bmm[- ]?hm+\b`), // mm-hm, mm-hmm
+	}
+
+	// Discourse markers - common verbal fillers that add little meaning
+	discourseFillers = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\byou know\b`),
 		regexp.MustCompile(`(?i)\bi mean\b`),
+		regexp.MustCompile(`(?i)\bi guess\b`),
+		regexp.MustCompile(`(?i)\byou see\b`),
+		regexp.MustCompile(`(?i)\bsort of\b`),
+		regexp.MustCompile(`(?i)\bkind of\b`),
 	}
+
+	// Combined list for standard filler removal (initialized in init())
+	fillerRegexes []*regexp.Regexp
+
 	multiSpaceRegex = regexp.MustCompile(`\s+`)
+
+	// Filler + punctuation patterns (removes trailing comma/period after filler removal)
+	trailingPunctRegex = regexp.MustCompile(`\s+([,.])\s*`)
+	leadingPunctRegex  = regexp.MustCompile(`^\s*[,.]\s+`)
 )
+
+func init() {
+	// Combine all filler categories into the main list
+	// Order matters: longer/compound patterns first to prevent partial matches
+	// e.g., "uh-huh" must be matched before "uh"
+	fillerRegexes = append(fillerRegexes, agreementFillers...)  // compound patterns first
+	fillerRegexes = append(fillerRegexes, discourseFillers...)  // multi-word phrases
+	fillerRegexes = append(fillerRegexes, hesitationFillers...) // simple sounds last
+}
 
 // removeFillers removes common filler words and phrases from transcribed text.
 // Uses word boundaries to avoid matching fillers inside valid words.
+// Handles cleanup of orphaned punctuation after filler removal.
 func removeFillers(text string) string {
 	result := text
+
+	// Remove all filler patterns
 	for _, re := range fillerRegexes {
 		result = re.ReplaceAllString(result, "")
 	}
+
+	// Clean up orphaned punctuation (e.g., "I, , think" -> "I, think")
+	// Remove double punctuation
+	result = regexp.MustCompile(`[,]+`).ReplaceAllString(result, ",")
+	result = regexp.MustCompile(`[.]+`).ReplaceAllString(result, ".")
+
+	// Remove leading punctuation at sentence start
+	result = leadingPunctRegex.ReplaceAllString(result, "")
 
 	// Collapse multiple spaces into single space
 	result = multiSpaceRegex.ReplaceAllString(result, " ")
