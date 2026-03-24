@@ -268,9 +268,9 @@ func removeFillers(text string) string {
 }
 
 // autoPunctuation adds punctuation based on speech patterns.
-// Adds periods at natural sentence boundaries (long pauses/breaths).
 // Adds question marks when the sentence ends with interrogative words/patterns.
-func autoPunctuation(text string) string {
+// Uses sentenceEnd as the default punctuation (typically "." but configurable).
+func autoPunctuation(text string, sentenceEnd string) string {
 	if text == "" {
 		return text
 	}
@@ -313,8 +313,8 @@ func autoPunctuation(text string) string {
 		}
 	}
 
-	// Default: add period
-	return text + "."
+	// Default: add configured sentence end punctuation
+	return text + sentenceEnd
 }
 
 // numberWords maps spoken number words to their digit equivalents.
@@ -459,7 +459,7 @@ func (d *Daemon) processText(text string) string {
 
 	// 4. Add automatic punctuation
 	if d.cfg.AutoPunctuation() {
-		text = autoPunctuation(text)
+		text = autoPunctuation(text, d.cfg.SentenceEnd())
 	}
 
 	// 5. Auto-capitalize (after punctuation is added)

@@ -128,6 +128,17 @@ func (c *Config) AutoCapitalize() bool {
 	return c.Get("AUTO_CAPITALIZE", "on") == "on"
 }
 
+// SentenceEnd returns the default punctuation for sentence endings.
+// Options: "." (period), "" (none), or any single character.
+// Default is "." (period). Set to "" or "none" to disable.
+func (c *Config) SentenceEnd() string {
+	val := c.Get("SENTENCE_END", ".")
+	if val == "none" {
+		return ""
+	}
+	return val
+}
+
 // Backend returns the transcription backend ("moonshine" or "whisper").
 func (c *Config) Backend() string {
 	return c.Get("BACKEND", "moonshine")
