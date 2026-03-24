@@ -29,6 +29,11 @@ type Tray struct {
 	mHistorySub   *systray.MenuItem
 	mHistoryItems []*systray.MenuItem
 	historyTexts  []string // full text for each slot (for clipboard copy)
+
+	// Language/Backend submenu
+	mLangSub     *systray.MenuItem
+	mLangEnglish *systray.MenuItem
+	mLangGerman  *systray.MenuItem
 }
 
 // Run starts the system tray. Blocks until quit is selected.
@@ -77,6 +82,12 @@ func (t *Tray) onReady() {
 	t.mDeviceSub = systray.AddMenuItem("Device", "Audio input device")
 	t.refreshDevices()
 	mRefresh := t.mDeviceSub.AddSubMenuItem("Refresh Devices", "Re-scan PipeWire")
+
+	// Language/Backend submenu
+	t.mLangSub = systray.AddMenuItem("Language", "Transcription language and backend")
+	t.mLangEnglish = t.mLangSub.AddSubMenuItem("English (Moonshine)", "Fast local English transcription")
+	t.mLangGerman = t.mLangSub.AddSubMenuItem("German (Whisper)", "German transcription via Whisper")
+	t.syncLanguageChecks()
 
 	// History submenu
 	t.mHistorySub = systray.AddMenuItem("History", "Transcription history")
@@ -138,6 +149,18 @@ func (t *Tray) menuLoop(mRefresh, mQuit *systray.MenuItem) {
 		case <-mRefresh.ClickedCh:
 			t.refreshDevices()
 
+		case <-t.mLangEnglish.ClickedCh:
+			if err := t.d.SetBackendConfig("moonshine", "en"); err == nil {
+				t.syncLanguageChecks()
+				daemon.Notify("Moonshine", "Switched to English (Moonshine). Restart daemon to apply.")
+			}
+
+		case <-t.mLangGerman.ClickedCh:
+			if err := t.d.SetBackendConfig("whisper", "de"); err == nil {
+				t.syncLanguageChecks()
+				daemon.Notify("Moonshine", "Switched to German (Whisper). Restart daemon to apply.")
+			}
+
 		case <-mQuit.ClickedCh:
 			systray.Quit()
 			return
@@ -163,6 +186,17 @@ func (t *Tray) syncTriggerChecks(freeSpeech bool) {
 	} else {
 		t.mFreeSpeech.SetTitle("○ Always Listening")
 		t.mPushToTalk.SetTitle("● Press to Talk")
+	}
+}
+
+func (t *Tray) syncLanguageChecks() {
+	backend := t.d.GetBackend()
+	if backend == "whisper" {
+		t.mLangEnglish.SetTitle("○ English (Moonshine)")
+		t.mLangGerman.SetTitle("● German (Whisper)")
+	} else {
+		t.mLangEnglish.SetTitle("● English (Moonshine)")
+		t.mLangGerman.SetTitle("○ German (Whisper)")
 	}
 }
 

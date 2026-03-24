@@ -93,6 +93,35 @@ func (c *Config) Set(key, val string) {
 	c.values[key] = val
 }
 
+// Save writes the current config to disk.
+func (c *Config) Save() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Ensure directory exists
+	dir := filepath.Dir(c.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+
+	// Build config content
+	var lines []string
+	for k, v := range c.values {
+		lines = append(lines, k+"="+v)
+	}
+
+	// Write atomically (temp file + rename)
+	tmpPath := c.path + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := os.Rename(tmpPath, c.path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename config: %w", err)
+	}
+	return nil
+}
+
 // Device returns the configured audio input device substring.
 func (c *Config) Device() string {
 	return c.Get("DEVICE", "")

@@ -896,6 +896,29 @@ func (d *Daemon) GetCurrentDeviceTarget() string {
 	return d.recorder.GetTarget()
 }
 
+// GetBackend returns the current transcription backend ("moonshine" or "whisper").
+func (d *Daemon) GetBackend() string {
+	return d.cfg.Backend()
+}
+
+// GetLanguage returns the current transcription language.
+func (d *Daemon) GetLanguage() string {
+	return d.cfg.Language()
+}
+
+// SetBackendConfig updates the backend and language config and saves to disk.
+// Returns error if save fails. Daemon restart required for changes to take effect.
+func (d *Daemon) SetBackendConfig(backend, language string) error {
+	d.cfg.Set("BACKEND", backend)
+	d.cfg.Set("LANGUAGE", language)
+	return d.cfg.Save()
+}
+
+// Config returns the daemon's config (for tray access).
+func (d *Daemon) Config() interface{ Save() error } {
+	return d.cfg
+}
+
 // StartListening begins the free-speech streaming loop.
 func (d *Daemon) StartListening() error {
 	d.mu.Lock()
