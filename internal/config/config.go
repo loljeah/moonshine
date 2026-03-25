@@ -17,6 +17,7 @@ type Config struct {
 	mu     sync.RWMutex
 	path   string
 	values map[string]string
+	macros map[string]string // user-defined voice macros (phrase -> replacement)
 }
 
 // Load reads the config file at path. Missing file is not an error.
@@ -168,6 +169,21 @@ func (c *Config) SentenceEnd() string {
 	return val
 }
 
+// SilenceTimeout returns the number of seconds of silence before auto-stopping
+// push-to-talk recording. Returns 0 to disable (manual stop only).
+func (c *Config) SilenceTimeout() int {
+	val := c.Get("SILENCE_TIMEOUT", "3")
+	n := 3
+	fmt.Sscanf(val, "%d", &n)
+	if n < 0 {
+		n = 0
+	}
+	if n > 30 {
+		n = 30
+	}
+	return n
+}
+
 // Backend returns the transcription backend ("moonshine" or "whisper").
 func (c *Config) Backend() string {
 	return c.Get("BACKEND", "moonshine")
@@ -210,4 +226,47 @@ func (c *Config) All() map[string]string {
 		result[k] = v
 	}
 	return result
+}
+
+// Macros returns the user-defined voice macro map.
+// Returns nil if no macros are loaded.
+func (c *Config) Macros() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.macros
+}
+
+// LoadMacros reads user-defined voice macros from the macros file
+// next to the config file. Format: "phrase = replacement" per line.
+// Lines starting with # are comments. Missing file is not an error.
+func (c *Config) LoadMacros() {
+	macroPath := filepath.Join(filepath.Dir(c.path), "macros")
+
+	f, err := os.Open(macroPath)
+	if err != nil {
+		return // File doesn't exist, no macros
+	}
+	defer f.Close()
+
+	macros := make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		phrase := strings.TrimSpace(strings.ToLower(key))
+		replacement := strings.TrimSpace(val)
+		if phrase != "" && replacement != "" {
+			macros[phrase] = replacement
+		}
+	}
+
+	c.mu.Lock()
+	c.macros = macros
+	c.mu.Unlock()
 }

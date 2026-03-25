@@ -96,6 +96,30 @@ func TypeText(text string) error {
 	return nil
 }
 
+// DeleteChars sends n backspace key presses via wtype to delete characters.
+func DeleteChars(n int) error {
+	if n <= 0 {
+		return nil
+	}
+
+	var args []string
+	args = append(args, "-d", "5")
+	for i := 0; i < n; i++ {
+		args = append(args, "-k", "BackSpace")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+
+	if err := exec.CommandContext(ctx, "wtype", args...).Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("wtype timed out")
+		}
+		return fmt.Errorf("wtype: %w", err)
+	}
+	return nil
+}
+
 // Notify sends a desktop notification via notify-send.
 // Non-blocking with timeout to prevent hangs.
 func Notify(title, body string) error {

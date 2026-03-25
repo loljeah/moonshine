@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,9 +100,21 @@ func historyPath() string {
 	return filepath.Join(os.Getenv("HOME"), ".local", "share", "moonshine", "history.log")
 }
 
+// isWordBoundary reports whether position i in text is a word boundary.
+// A word boundary exists at the start/end of string, or adjacent to a non-letter/non-digit character.
+func isWordBoundary(text string, i int) bool {
+	if i <= 0 || i >= len(text) {
+		return true
+	}
+	r := rune(text[i])
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+}
+
 // expandVoiceCommands replaces voice commands with their character equivalents.
-// Case-insensitive matching. Special keys use {KEY} placeholder format.
-func expandVoiceCommands(text string) string {
+// Case-insensitive matching with word boundary checks to prevent matching inside words
+// (e.g., "star" inside "restart"). Special keys use {KEY} placeholder format.
+// User-defined macros are applied after built-in commands.
+func expandVoiceCommands(text string, macros map[string]string) string {
 	// Order matters — longer phrases first to avoid partial matches
 	replacements := []struct {
 		phrase string
@@ -109,9 +122,7 @@ func expandVoiceCommands(text string) string {
 	}{
 		// Multi-word phrases first
 		{"new paragraph", "\n\n"},
-		{"newparagraph", "\n\n"},
 		{"new line", "\n"},
-		{"newline", "\n"},
 		{"arrow down", "{Down}"},
 		{"arrow up", "{Up}"},
 		{"arrow left", "{Left}"},
@@ -141,7 +152,7 @@ func expandVoiceCommands(text string) string {
 		{"exclamation mark", "!"},
 		{"ellipsis", "..."},
 		{"em dash", "—"},
-		// Single words
+		// Single words — use precise technical terms only
 		{"backspace", "{BackSpace}"},
 		{"enter", "\n"},
 		{"tab", "\t"},
@@ -151,7 +162,6 @@ func expandVoiceCommands(text string) string {
 		{"semicolon", ";"},
 		{"comma", ","},
 		{"period", "."},
-		{"dot", "."},
 		{"quote", "'"},
 		{"underscore", "_"},
 		{"plus", "+"},
@@ -159,29 +169,55 @@ func expandVoiceCommands(text string) string {
 		{"hyphen", "-"},
 		{"dash", "-"},
 		{"asterisk", "*"},
-		{"star", "*"},
 		{"slash", "/"},
 		{"backslash", "\\"},
 		{"ampersand", "&"},
 		{"pipe", "|"},
 		{"hash", "#"},
-		{"pound", "#"},
 	}
 
 	result := text
 
 	for _, r := range replacements {
-		// Find all occurrences (case-insensitive)
 		idx := 0
 		for {
-			pos := strings.Index(strings.ToLower(result[idx:]), r.phrase)
+			lower := strings.ToLower(result[idx:])
+			pos := strings.Index(lower, r.phrase)
 			if pos < 0 {
 				break
 			}
-			pos += idx
-			// Replace preserving position
-			result = result[:pos] + r.char + result[pos+len(r.phrase):]
-			idx = pos + len(r.char)
+			absPos := pos + idx
+			endPos := absPos + len(r.phrase)
+
+			// Only replace if both boundaries are word boundaries
+			if isWordBoundary(result, absPos) && isWordBoundary(result, endPos) {
+				result = result[:absPos] + r.char + result[endPos:]
+				idx = absPos + len(r.char)
+			} else {
+				// Skip past this match, not a word boundary
+				idx = absPos + len(r.phrase)
+			}
+		}
+	}
+
+	// Apply user-defined macros (same word-boundary logic)
+	for phrase, replacement := range macros {
+		idx := 0
+		for {
+			lower := strings.ToLower(result[idx:])
+			pos := strings.Index(lower, phrase)
+			if pos < 0 {
+				break
+			}
+			absPos := pos + idx
+			endPos := absPos + len(phrase)
+
+			if isWordBoundary(result, absPos) && isWordBoundary(result, endPos) {
+				result = result[:absPos] + replacement + result[endPos:]
+				idx = absPos + len(replacement)
+			} else {
+				idx = absPos + len(phrase)
+			}
 		}
 	}
 
@@ -293,13 +329,13 @@ func autoPunctuation(text string, sentenceEnd string) string {
 	}
 	for _, q := range questionStarters {
 		if strings.HasPrefix(lower, q) {
-			return text + "?"
+			return text + "? "
 		}
 	}
 
 	// "... or not" pattern suggests a question
 	if strings.HasSuffix(lower, " or not") {
-		return text + "?"
+		return text + "? "
 	}
 
 	// Tag questions at the end
@@ -309,12 +345,12 @@ func autoPunctuation(text string, sentenceEnd string) string {
 	}
 	for _, tag := range tagPatterns {
 		if strings.HasSuffix(lower, " "+tag) || lower == tag {
-			return text + "?"
+			return text + "? "
 		}
 	}
 
-	// Default: add configured sentence end punctuation
-	return text + sentenceEnd
+	// Default: add configured sentence end punctuation with trailing space
+	return text + sentenceEnd + " "
 }
 
 // numberWords maps spoken number words to their digit equivalents.
@@ -447,9 +483,9 @@ func (d *Daemon) processText(text string) string {
 		text = removeFillers(text)
 	}
 
-	// 2. Expand voice commands (new line, period, etc.)
+	// 2. Expand voice commands (new line, period, etc.) + user macros
 	if d.cfg.VoiceCommands() {
-		text = expandVoiceCommands(text)
+		text = expandVoiceCommands(text, d.cfg.Macros())
 	}
 
 	// 3. Convert spoken numbers to digits
@@ -568,11 +604,22 @@ type Daemon struct {
 	listenCancel   context.CancelFunc
 	listening      bool
 
+	// Push-to-talk streaming (for silence auto-stop)
+	pttRecorder *audio.StreamRecorder // streaming recorder for push-to-talk
+	pttSamples  []float32             // accumulated PCM samples
+	pttMu       sync.Mutex            // protects pttSamples
+	pttCancel   context.CancelFunc    // cancels silence monitor goroutine
+
 	// Keep-alive for USB headset
 	keepAliveCancel context.CancelFunc
 
 	// Transcription history (most recent last, capped at maxHistoryEntries).
 	history []HistoryEntry
+
+	// Last output tracking for "scratch that" undo
+	lastOutputLen  int        // rune count of last typed/copied text
+	lastOutputMode OutputMode // mode used for last output
+	lastOutputText string     // raw text of last output (for clipboard re-copy)
 
 	// StateCh broadcasts state changes (buffered, non-blocking send).
 	StateCh chan StateChange
@@ -606,6 +653,7 @@ func New(trans transcriber.Transcriber, cfg *config.Config, soundDir string, ver
 	}
 
 	d.loadHistory()
+	cfg.LoadMacros()
 
 	os.MkdirAll(stateDir, 0o700) // Restrict to owner only (contains status info)
 	d.writeStatus()
@@ -651,9 +699,18 @@ func (d *Daemon) Toggle() (string, error) {
 		d.mu.Unlock()
 
 		d.playSound("start.wav")
-		Notify("Recording", "Press again to stop")
 
-		if err := d.recorder.Start(); err != nil {
+		silenceTimeout := d.cfg.SilenceTimeout()
+		if silenceTimeout > 0 {
+			Notify("Recording", fmt.Sprintf("Auto-stops after %ds silence", silenceTimeout))
+		} else {
+			Notify("Recording", "Press again to stop")
+		}
+
+		// Use streaming recorder for silence detection
+		target := d.recorder.GetTarget()
+		rec := audio.NewStreamRecorder(target)
+		if err := rec.Start(); err != nil {
 			d.mu.Lock()
 			d.state = StateIdle
 			d.writeStatus()
@@ -661,89 +718,22 @@ func (d *Daemon) Toggle() (string, error) {
 			d.mu.Unlock()
 			return "", fmt.Errorf("start recording: %w", err)
 		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		d.pttMu.Lock()
+		d.pttRecorder = rec
+		d.pttSamples = nil
+		d.pttCancel = cancel
+		d.pttMu.Unlock()
+
+		go d.pttSilenceMonitor(ctx)
 		return "recording", nil
 
 	case StateRecording:
-		d.state = StateProcessing
-		d.writeStatus()
-		d.notify(StateProcessing)
-		currentMode := d.mode
+		// Manual stop — finishPTTRecording handles everything
 		d.mu.Unlock()
-
-		d.playSound("stop.wav")
-
-		// Stop recording and get PCM
-		samples, err := d.recorder.Stop()
-		if err != nil {
-			d.mu.Lock()
-			d.state = StateIdle
-			d.writeStatus()
-			d.notify(StateIdle)
-			d.mu.Unlock()
-			d.playSound("error.wav")
-			Notify("No Audio", "Recording was empty")
-			return "", fmt.Errorf("stop recording: %w", err)
-		}
-
-		// Normalize audio
-		audio.NormalizeAudio(samples, 0.95)
-
-		if d.verbose {
-			log.Printf("transcribing %d samples (%.1fs)", len(samples), float64(len(samples))/float64(audio.SampleRate))
-		}
-
-		// Transcribe
-		lines, err := d.transcriber.Transcribe(samples, audio.SampleRate)
-		if err != nil {
-			d.mu.Lock()
-			d.state = StateIdle
-			d.writeStatus()
-			d.notify(StateIdle)
-			d.mu.Unlock()
-			d.playSound("error.wav")
-			Notify("Error", err.Error())
-			return "", fmt.Errorf("transcribe: %w", err)
-		}
-
-		// Collect text from lines
-		var parts []string
-		for _, l := range lines {
-			if l.Text != "" {
-				parts = append(parts, l.Text)
-			}
-		}
-		text := strings.Join(parts, " ")
-
-		// Apply text processing pipeline based on config
-		text = d.processText(text)
-
-		d.mu.Lock()
-		d.state = StateIdle
-		d.writeStatus()
-		d.notify(StateIdle)
-		d.mu.Unlock()
-
-		if text == "" {
-			d.playSound("error.wav")
-			Notify("No Speech", "Couldn't detect any words")
-			return "", nil
-		}
-
-		// Output
-		CopyToClipboard(text)
-		d.playSound("success.wav")
-		d.logTranscription(currentMode, text)
-
-		if currentMode == ModeType {
-			Notify("Typing...", text)
-			if err := TypeText(text); err != nil {
-				Notify("Copied", text+" (wtype failed, use Ctrl+V)")
-			}
-		} else {
-			Notify("Copied", text)
-		}
-
-		return text, nil
+		d.finishPTTRecording()
+		return "stopped", nil
 
 	case StateProcessing:
 		d.mu.Unlock()
@@ -1111,6 +1101,23 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 				// Apply text processing pipeline based on config
 				text := d.processText(line.Text)
 
+				// Check for "scratch that" / "undo that" control commands
+				lowerText := strings.ToLower(strings.TrimSpace(text))
+				if lowerText == "scratch that" || lowerText == "undo that" || lowerText == "scratch that." || lowerText == "undo that." {
+					if _, err := d.ScratchThat(); err != nil {
+						log.Printf("free-speech scratch error: %s", err)
+					}
+					// Reset stream and continue
+					stream.Stop()
+					stream.Start()
+					d.mu.Lock()
+					d.state = StateListening
+					d.writeStatus()
+					d.notify(StateListening)
+					d.mu.Unlock()
+					break
+				}
+
 				// Get current output mode
 				d.mu.Lock()
 				currentMode := d.mode
@@ -1135,6 +1142,8 @@ func (d *Daemon) streamingLoop(ctx context.Context) {
 					}
 					d.playSound("success.wav")
 				}
+
+				d.trackOutput(text, currentMode)
 
 				// Reset stream to clear completed transcript and prepare for next utterance
 				stream.Stop()
@@ -1220,6 +1229,241 @@ func (d *Daemon) restartStreaming() error {
 	d.mu.Unlock()
 
 	return nil
+}
+
+// ScratchThat undoes the last typed/copied transcription.
+// In Type mode, sends backspaces to delete the text. In Clipboard mode, clears clipboard.
+func (d *Daemon) ScratchThat() (string, error) {
+	d.mu.Lock()
+	outputLen := d.lastOutputLen
+	outputMode := d.lastOutputMode
+	d.lastOutputLen = 0 // Prevent double-scratch
+	d.mu.Unlock()
+
+	if outputLen == 0 {
+		return "", fmt.Errorf("nothing to undo")
+	}
+
+	if outputMode == ModeType {
+		if err := DeleteChars(outputLen); err != nil {
+			return "", fmt.Errorf("delete: %w", err)
+		}
+	} else {
+		CopyToClipboard("")
+	}
+
+	Notify("Scratch", fmt.Sprintf("Removed %d characters", outputLen))
+	return fmt.Sprintf("scratched %d chars", outputLen), nil
+}
+
+// trackOutput records the last output for scratch-that undo.
+func (d *Daemon) trackOutput(text string, mode OutputMode) {
+	d.mu.Lock()
+	d.lastOutputLen = len([]rune(text))
+	d.lastOutputMode = mode
+	d.lastOutputText = text
+	d.mu.Unlock()
+}
+
+// rmsLevel calculates the root mean square of a float32 audio buffer.
+func rmsLevel(samples []float32) float32 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		sum += float64(s) * float64(s)
+	}
+	return float32(math.Sqrt(sum / float64(len(samples))))
+}
+
+// pttSilenceMonitor reads audio chunks, accumulates them, and auto-stops
+// when silence is detected for the configured duration.
+func (d *Daemon) pttSilenceMonitor(ctx context.Context) {
+	const chunkSize = 4800 // 300ms at 16kHz
+	const silenceThreshold = 0.005
+
+	silenceTimeout := d.cfg.SilenceTimeout()
+	if silenceTimeout <= 0 {
+		// No silence detection, just accumulate samples until manual stop
+		silenceTimeout = 0
+	}
+	maxSilenceChunks := (silenceTimeout * audio.SampleRate) / chunkSize // chunks of silence before auto-stop
+	silentChunks := 0
+	hadSpeech := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		d.pttMu.Lock()
+		rec := d.pttRecorder
+		d.pttMu.Unlock()
+
+		if rec == nil {
+			return
+		}
+
+		chunk, err := rec.ReadChunk(chunkSize)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			if d.verbose {
+				log.Printf("ptt monitor read error: %s", err)
+			}
+			return
+		}
+
+		// Accumulate samples
+		d.pttMu.Lock()
+		d.pttSamples = append(d.pttSamples, chunk...)
+		d.pttMu.Unlock()
+
+		// Check silence
+		if silenceTimeout > 0 {
+			level := rmsLevel(chunk)
+			if level < silenceThreshold {
+				silentChunks++
+			} else {
+				silentChunks = 0
+				hadSpeech = true
+			}
+
+			// Auto-stop after configured silence duration (only if we had speech first)
+			if hadSpeech && silentChunks >= maxSilenceChunks {
+				if d.verbose {
+					log.Printf("silence detected (%ds), auto-stopping", silenceTimeout)
+				}
+				go d.finishPTTRecording()
+				return
+			}
+		}
+	}
+}
+
+// finishPTTRecording stops the push-to-talk recording and processes the audio.
+// Called either by manual Toggle() or by silence auto-stop.
+func (d *Daemon) finishPTTRecording() {
+	d.mu.Lock()
+	if d.state != StateRecording {
+		d.mu.Unlock()
+		return
+	}
+	d.state = StateProcessing
+	d.writeStatus()
+	d.notify(StateProcessing)
+	currentMode := d.mode
+	d.mu.Unlock()
+
+	d.playSound("stop.wav")
+
+	// Cancel the silence monitor
+	d.pttMu.Lock()
+	if d.pttCancel != nil {
+		d.pttCancel()
+		d.pttCancel = nil
+	}
+	rec := d.pttRecorder
+	d.pttRecorder = nil
+	samples := d.pttSamples
+	d.pttSamples = nil
+	d.pttMu.Unlock()
+
+	// Stop the stream recorder
+	if rec != nil {
+		rec.Stop()
+	}
+
+	if len(samples) < 1600 {
+		d.mu.Lock()
+		d.state = StateIdle
+		d.writeStatus()
+		d.notify(StateIdle)
+		d.mu.Unlock()
+		d.playSound("error.wav")
+		Notify("No Audio", "Recording was too short")
+		return
+	}
+
+	// Normalize audio
+	audio.NormalizeAudio(samples, 0.95)
+
+	if d.verbose {
+		log.Printf("transcribing %d samples (%.1fs)", len(samples), float64(len(samples))/float64(audio.SampleRate))
+	}
+
+	// Transcribe
+	lines, err := d.transcriber.Transcribe(samples, audio.SampleRate)
+	if err != nil {
+		d.mu.Lock()
+		d.state = StateIdle
+		d.writeStatus()
+		d.notify(StateIdle)
+		d.mu.Unlock()
+		d.playSound("error.wav")
+		Notify("Error", err.Error())
+		return
+	}
+
+	// Collect text from lines
+	var parts []string
+	for _, l := range lines {
+		if l.Text != "" {
+			parts = append(parts, l.Text)
+		}
+	}
+	text := strings.Join(parts, " ")
+
+	// Apply text processing pipeline based on config
+	text = d.processText(text)
+
+	d.mu.Lock()
+	d.state = StateIdle
+	d.writeStatus()
+	d.notify(StateIdle)
+	d.mu.Unlock()
+
+	if text == "" {
+		d.playSound("error.wav")
+		Notify("No Speech", "Couldn't detect any words")
+		return
+	}
+
+	// Check for "scratch that" / "undo that" control commands
+	lowerText := strings.ToLower(strings.TrimSpace(text))
+	if lowerText == "scratch that" || lowerText == "undo that" || lowerText == "scratch that." || lowerText == "undo that." || lowerText == "scratch that. " || lowerText == "undo that. " {
+		result, err := d.ScratchThat()
+		if err != nil {
+			d.playSound("error.wav")
+			Notify("Scratch", err.Error())
+			return
+		}
+		d.playSound("success.wav")
+		_ = result
+		return
+	}
+
+	// Output
+	CopyToClipboard(text)
+	d.playSound("success.wav")
+	d.logTranscription(currentMode, text)
+
+	if currentMode == ModeType {
+		Notify("Typing...", text)
+		if err := TypeText(text); err != nil {
+			Notify("Copied", text+" (wtype failed, use Ctrl+V)")
+		}
+	} else {
+		Notify("Copied", text)
+	}
+
+	d.trackOutput(text, currentMode)
 }
 
 // Close cleans up the daemon.

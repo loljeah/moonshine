@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -133,6 +134,10 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 		}
 
 	case "status":
+		if len(args) > 0 && args[0] == "json" {
+			s.writeStatusJSON(conn)
+			return
+		}
 		state := s.daemon.GetState()
 		fmt.Fprintf(conn, "OK %s\n", state)
 
@@ -248,6 +253,7 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 			"DEVICE": true, "LANGUAGE": true, "AUTO_PUNCTUATION": true,
 			"AUTO_CAPITALIZE": true, "FILLER_REMOVAL": true,
 			"VOICE_COMMANDS": true, "NUMBER_FORMAT": true,
+			"SILENCE_TIMEOUT": true,
 		}
 
 		if len(args) == 0 {
@@ -285,6 +291,14 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "OK %s=%s\n", key, val)
 		}
 
+	case "scratch":
+		result, err := s.daemon.ScratchThat()
+		if err != nil {
+			fmt.Fprintf(conn, "ERR %s\n", err)
+		} else {
+			fmt.Fprintf(conn, "OK %s\n", result)
+		}
+
 	case "quit":
 		fmt.Fprintln(conn, "OK")
 		close(s.QuitCh)
@@ -292,6 +306,67 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 	default:
 		fmt.Fprintf(conn, "ERR unknown command: %s\n", cmd)
 	}
+}
+
+// writeStatusJSON outputs Waybar-compatible JSON for the current daemon state.
+func (s *SocketServer) writeStatusJSON(conn net.Conn) {
+	state := s.daemon.GetState()
+	mode := s.daemon.GetMode()
+	enabled := s.daemon.GetEnabled()
+	freeSpeech := s.daemon.GetFreeSpeech()
+
+	var text, alt, class string
+	percentage := 100
+
+	if !enabled {
+		text = "Disabled"
+		alt = "disabled"
+		class = "disabled"
+		percentage = 0
+	} else {
+		switch state {
+		case StateIdle:
+			text = "Ready"
+			alt = "idle"
+			class = "idle"
+		case StateRecording:
+			text = "Recording"
+			alt = "recording"
+			class = "recording"
+		case StateProcessing:
+			text = "Processing"
+			alt = "processing"
+			class = "processing"
+		case StateListening:
+			text = "Listening"
+			alt = "listening"
+			class = "listening"
+		case StateSpeechDetected:
+			text = "Speech"
+			alt = "speech"
+			class = "speech"
+		}
+	}
+
+	dest := "clipboard"
+	if mode == ModeType {
+		dest = "typing"
+	}
+	tooltip := "Moonshine → " + dest
+	if freeSpeech {
+		tooltip = "Always Listening → " + dest
+	}
+
+	data := map[string]interface{}{
+		"text":       text,
+		"alt":        alt,
+		"tooltip":    tooltip,
+		"class":      class,
+		"percentage": percentage,
+	}
+
+	out, _ := json.Marshal(data)
+	fmt.Fprintln(conn, string(out))
 }
 
 // Close shuts down the socket server and removes the socket file.
