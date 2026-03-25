@@ -597,17 +597,22 @@ func (d *Daemon) History() []HistoryEntry {
 	return result
 }
 
+// TranscriberFactory creates a new transcriber for the given backend and language.
+// Used for hot-swapping the backend at runtime without restarting the daemon.
+type TranscriberFactory func(backend, language string) (transcriber.Transcriber, error)
+
 // Daemon is the core state machine: idle -> recording -> processing -> idle.
 type Daemon struct {
-	mu          sync.Mutex
-	state       State
-	mode        OutputMode
-	enabled     bool // master enable/disable toggle
-	transcriber transcriber.Transcriber
-	recorder    *audio.Recorder
-	cfg         *config.Config
-	soundDir    string
-	verbose     bool
+	mu           sync.Mutex
+	state        State
+	mode         OutputMode
+	enabled      bool // master enable/disable toggle
+	transcriber  transcriber.Transcriber
+	transFactory TranscriberFactory // optional: for runtime backend switching
+	recorder     *audio.Recorder
+	cfg          *config.Config
+	soundDir     string
+	verbose      bool
 
 	// Free Speech toggle (independent of output mode)
 	freeSpeech     bool // true = always-listening enabled
@@ -914,6 +919,67 @@ func (d *Daemon) SetBackendConfig(backend, language string) error {
 	d.cfg.Set("BACKEND", backend)
 	d.cfg.Set("LANGUAGE", language)
 	return d.cfg.Save()
+}
+
+// SetTranscriberFactory registers a factory for creating transcribers at runtime.
+// Must be called before SwitchBackend can be used.
+func (d *Daemon) SetTranscriberFactory(f TranscriberFactory) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.transFactory = f
+}
+
+// SwitchBackend hot-swaps the transcription backend and language at runtime.
+// Stops any active listening/recording, creates a new transcriber, and resumes.
+func (d *Daemon) SwitchBackend(backend, language string) error {
+	d.mu.Lock()
+	factory := d.transFactory
+	d.mu.Unlock()
+
+	if factory == nil {
+		return fmt.Errorf("no transcriber factory registered")
+	}
+
+	// Remember if free speech was active so we can restart it
+	wasListening := d.GetFreeSpeech()
+
+	// Stop active sessions
+	if wasListening {
+		d.StopListening()
+	}
+
+	// Save config
+	if err := d.SetBackendConfig(backend, language); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	// Create new transcriber
+	log.Printf("switching backend to %s/%s...", backend, language)
+	newTrans, err := factory(backend, language)
+	if err != nil {
+		// Restore listening if it was active
+		if wasListening {
+			d.SetFreeSpeech(true)
+		}
+		return fmt.Errorf("create transcriber: %w", err)
+	}
+
+	// Swap transcriber
+	d.mu.Lock()
+	oldTrans := d.transcriber
+	d.transcriber = newTrans
+	d.mu.Unlock()
+
+	// Close old transcriber
+	oldTrans.Close()
+	log.Printf("switched to %s/%s", backend, language)
+
+	// Restart free speech if it was active
+	if wasListening {
+		d.SetFreeSpeech(true)
+	}
+
+	return nil
 }
 
 // Config returns the daemon's config (for tray access).

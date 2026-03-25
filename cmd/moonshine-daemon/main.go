@@ -132,6 +132,24 @@ func main() {
 	// Create daemon
 	d := daemon.New(trans, cfg, soundDir, *verbose)
 
+	// Register transcriber factory for runtime backend switching
+	d.SetTranscriberFactory(func(backend, language string) (transcriber.Transcriber, error) {
+		switch transcriber.Backend(backend) {
+		case transcriber.BackendWhisper:
+			whisperModel := cfg.WhisperModel()
+			if whisperModel == "" {
+				whisperModel = resolveWhisperModelPath()
+			}
+			log.Printf("loading whisper model: %s (language: %s)", whisperModel, language)
+			return transcriber.NewWhisperTranscriber(whisperModel, language, cfg.Threads())
+		default:
+			modelPath := resolveMoonshineModelPath(language)
+			arch := moonshine.ArchMediumStreaming
+			log.Printf("loading moonshine model: %s (arch: medium-streaming)", modelPath)
+			return transcriber.NewMoonshineTranscriber(modelPath, arch)
+		}
+	})
+
 	// Start socket server
 	sock, err := daemon.NewSocketServer(d, *verbose)
 	if err != nil {

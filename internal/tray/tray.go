@@ -31,9 +31,26 @@ type Tray struct {
 	historyTexts  []string // full text for each slot (for clipboard copy)
 
 	// Language/Backend submenu
-	mLangSub     *systray.MenuItem
-	mLangEnglish *systray.MenuItem
-	mLangGerman  *systray.MenuItem
+	mLangSub   *systray.MenuItem
+	mLangItems []*systray.MenuItem
+	langOpts   []langOption
+}
+
+// langOption describes a selectable language entry.
+type langOption struct {
+	label   string // display name, e.g. "English (Moonshine)"
+	lang    string // config value, e.g. "en"
+	backend string // "moonshine" or "whisper"
+}
+
+// supportedLanguages defines all selectable language/backend combinations.
+// Moonshine only supports English; all other languages use Whisper.
+var supportedLanguages = []langOption{
+	{"English (Moonshine)", "en", "moonshine"},
+	{"German (Whisper)", "de", "whisper"},
+	{"Spanish (Whisper)", "es", "whisper"},
+	{"Japanese (Whisper)", "ja", "whisper"},
+	{"Arabic (Whisper)", "ar", "whisper"},
 }
 
 // Run starts the system tray. Blocks until quit is selected.
@@ -85,8 +102,11 @@ func (t *Tray) onReady() {
 
 	// Language/Backend submenu
 	t.mLangSub = systray.AddMenuItem("Language", "Transcription language and backend")
-	t.mLangEnglish = t.mLangSub.AddSubMenuItem("English (Moonshine)", "Fast local English transcription")
-	t.mLangGerman = t.mLangSub.AddSubMenuItem("German (Whisper)", "German transcription via Whisper")
+	t.langOpts = supportedLanguages
+	t.mLangItems = make([]*systray.MenuItem, len(t.langOpts))
+	for i, opt := range t.langOpts {
+		t.mLangItems[i] = t.mLangSub.AddSubMenuItem(opt.label, opt.lang+" / "+opt.backend)
+	}
 	t.syncLanguageChecks()
 
 	// History submenu
@@ -113,6 +133,23 @@ func (t *Tray) onReady() {
 	systray.AddSeparator()
 
 	mQuit := systray.AddMenuItem("Quit", "Stop Moonshine daemon")
+
+	// Start language click handlers (one goroutine per language)
+	for i, opt := range t.langOpts {
+		idx := i
+		o := opt
+		go func() {
+			for range t.mLangItems[idx].ClickedCh {
+				daemon.Notify("Moonshine", "Switching to "+o.label+"...")
+				if err := t.d.SwitchBackend(o.backend, o.lang); err != nil {
+					daemon.Notify("Moonshine", "Switch failed: "+err.Error())
+				} else {
+					t.syncLanguageChecks()
+					daemon.Notify("Moonshine", "Switched to "+o.label)
+				}
+			}
+		}()
+	}
 
 	// Event loop
 	go t.watchState()
@@ -149,18 +186,6 @@ func (t *Tray) menuLoop(mRefresh, mQuit *systray.MenuItem) {
 		case <-mRefresh.ClickedCh:
 			t.refreshDevices()
 
-		case <-t.mLangEnglish.ClickedCh:
-			if err := t.d.SetBackendConfig("moonshine", "en"); err == nil {
-				t.syncLanguageChecks()
-				daemon.Notify("Moonshine", "Switched to English (Moonshine). Restart daemon to apply.")
-			}
-
-		case <-t.mLangGerman.ClickedCh:
-			if err := t.d.SetBackendConfig("whisper", "de"); err == nil {
-				t.syncLanguageChecks()
-				daemon.Notify("Moonshine", "Switched to German (Whisper). Restart daemon to apply.")
-			}
-
 		case <-mQuit.ClickedCh:
 			systray.Quit()
 			return
@@ -190,13 +215,13 @@ func (t *Tray) syncTriggerChecks(freeSpeech bool) {
 }
 
 func (t *Tray) syncLanguageChecks() {
-	backend := t.d.GetBackend()
-	if backend == "whisper" {
-		t.mLangEnglish.SetTitle("○ English (Moonshine)")
-		t.mLangGerman.SetTitle("● German (Whisper)")
-	} else {
-		t.mLangEnglish.SetTitle("● English (Moonshine)")
-		t.mLangGerman.SetTitle("○ German (Whisper)")
+	lang := t.d.GetLanguage()
+	for i, opt := range t.langOpts {
+		if opt.lang == lang {
+			t.mLangItems[i].SetTitle("● " + opt.label)
+		} else {
+			t.mLangItems[i].SetTitle("○ " + opt.label)
+		}
 	}
 }
 
