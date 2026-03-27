@@ -166,6 +166,16 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// Apply startup config: output mode and auto-listen
+	d.SetMode(daemon.ParseOutputMode(cfg.Mode()))
+	if cfg.AutoListen() {
+		if err := d.StartListening(); err != nil {
+			log.Printf("auto-listen failed: %s", err)
+		} else {
+			log.Println("auto-listen enabled from config")
+		}
+	}
+
 	fmt.Println("moonshine-daemon running")
 	fmt.Printf("  socket: %s\n", daemon.SocketPath)
 

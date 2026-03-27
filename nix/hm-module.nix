@@ -20,6 +20,8 @@ let
     "SILENCE_TIMEOUT=${toString cfg.settings.silenceTimeout}"
     (lib.optionalString (cfg.settings.whisperModel != "") "WHISPER_MODEL=${cfg.settings.whisperModel}")
     "THREADS=${toString cfg.settings.threads}"
+    "MODE=${cfg.settings.defaultMode}"
+    "AUTO_LISTEN=${boolToOnOff cfg.settings.autoListen}"
   ]);
 
   macrosLines = lib.concatStringsSep "\n"
@@ -106,6 +108,18 @@ in {
         type = types.ints.between 1 32;
         default = 4;
         description = "CPU threads for Whisper transcription.";
+      };
+
+      defaultMode = mkOption {
+        type = types.enum [ "type" "clipboard" ];
+        default = "type";
+        description = "Default output mode. 'type' sends text to focused window, 'clipboard' copies to clipboard.";
+      };
+
+      autoListen = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Start free-speech (always-listening) mode automatically on daemon startup.";
       };
     };
 

@@ -217,6 +217,16 @@ func (c *Config) GetBool(key string, defaultVal bool) bool {
 	return c.Get(key, def) == "on"
 }
 
+// Mode returns the default output mode ("type" or "clipboard").
+func (c *Config) Mode() string {
+	return c.Get("MODE", "type")
+}
+
+// AutoListen returns whether to start free-speech listening on daemon startup.
+func (c *Config) AutoListen() bool {
+	return c.Get("AUTO_LISTEN", "off") == "on"
+}
+
 // All returns a copy of all config values.
 func (c *Config) All() map[string]string {
 	c.mu.RLock()
