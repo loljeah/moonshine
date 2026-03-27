@@ -33,6 +33,17 @@ Removed system tray and Waybar integration to make the application purely usersp
 - Daemon runs headless via systemd user service
 - Control via `moonshine-ctl` or `moonshine-rofi`
 
+#### Commit: 52ff5f4 — Update README and clean up tray references
+
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `README.md` | Complete rewrite for headless CLI usage, Home Manager docs, rofi/keybindings |
+| `shell-go.nix` | Removed dbus, gtk3, glib, libayatana-appindicator dependencies |
+| `internal/daemon/daemon.go` | Removed tray references from comments |
+| `.context/PROJECT.md` | Updated architecture and documentation |
+| `.context/SESSION.md` | Session journal |
+
 ### Current Architecture
 
 ```
@@ -86,12 +97,49 @@ services.moonshine = {
 | Commit | Description |
 |--------|-------------|
 | `b4672ce` | Remove system tray and Waybar integration for pure userspace CLI |
+| `52ff5f4` | Update README and clean up tray references |
+
+### Testing
+
+Built and tested the daemon:
+
+```
+$ nix build
+$ ./result/bin/moonshine-daemon --verbose &
+moonshine-daemon running
+  socket: /tmp/moonshine/moonshine.sock
+moonshine: loading model...
+moonshine: backend: moonshine, model: .../medium-streaming-en/quantized
+moonshine: model loaded
+moonshine: matched device "PRO X" -> alsa_input.usb-Logitech_PRO_X_Wireless_Gaming_Headset-00.mono-fallback
+
+$ ./result/bin/moonshine-ctl status
+OK idle
+
+$ ./result/bin/moonshine-ctl devices
+OK PRO X Wireless Gaming Headset Mono (alsa_input.usb-...)
+
+$ ./result/bin/moonshine-ctl freespeech
+OK off
+
+$ ./result/bin/moonshine-ctl settings
+OK LANGUAGE=en
+
+$ ./result/bin/moonshine-ctl mode
+OK type
+
+$ ./result/bin/moonshine-ctl quit
+OK
+```
+
+All CLI commands working correctly.
 
 ### Current State
 
 - All changes committed and pushed to `origin/master`
-- Build verified (`go vet`, `go build`, `nix flake check` pass)
-- Daemon runs headless, controlled via socket IPC
+- Build verified (`nix build` successful)
+- Daemon tested and working headless
+- CLI control fully functional
 
 ### Open Questions
 
@@ -102,4 +150,4 @@ services.moonshine = {
 - Add more voice commands (backspace, delete, escape)
 - German filler patterns for `LANGUAGE=de`
 - Auto-restart daemon on config change
-- Additional language options
+- Add CLI commands for backend/language hot-swap
