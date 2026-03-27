@@ -74,7 +74,7 @@ func ParseOutputMode(s string) OutputMode {
 	}
 }
 
-// StateChange is sent to listeners (e.g. the tray) when state changes.
+// StateChange is sent to listeners when state changes.
 type StateChange struct {
 	State      State
 	Mode       OutputMode
@@ -682,7 +682,7 @@ func New(trans transcriber.Transcriber, cfg *config.Config, soundDir string, ver
 }
 
 // Toggle starts or stops recording using the daemon's current output mode
-// (set via SetMode or tray menu). Returns transcribed text on stop, or
+// (set via SetMode or CLI). Returns transcribed text on stop, or
 // "recording" if recording just started. When FreeSpeech is enabled,
 // toggle is ignored (use ToggleFreeSpeech instead).
 func (d *Daemon) Toggle() (string, error) {
@@ -798,7 +798,7 @@ func (d *Daemon) GetMode() OutputMode {
 	return d.mode
 }
 
-// SetMode changes the output mode and notifies listeners (tray).
+// SetMode changes the output mode and notifies listeners.
 // FreeSpeech is now a separate toggle, so mode changes don't affect it.
 func (d *Daemon) SetMode(m OutputMode) {
 	d.mu.Lock()
@@ -982,7 +982,7 @@ func (d *Daemon) SwitchBackend(backend, language string) error {
 	return nil
 }
 
-// Config returns the daemon's config (for tray access).
+// Config returns the daemon's config.
 func (d *Daemon) Config() interface{ Save() error } {
 	return d.cfg
 }

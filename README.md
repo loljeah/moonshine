@@ -1,12 +1,11 @@
 # Moonshine Voice-to-Text
 
-Local speech-to-text daemon using the Moonshine AI model. Works completely offline with no cloud dependency. Features a system tray icon, real-time streaming transcription, and configurable text processing.
+Local speech-to-text daemon using the Moonshine AI model. Works completely offline with no cloud dependency. Runs as a headless systemd user service, controlled via CLI.
 
 ## Features
 
 - **Always Listening Mode** - Continuous speech-to-text without button presses
 - **Press to Talk Mode** - Traditional push-to-talk recording
-- **System Tray Integration** - Visual status indicator with menu controls
 - **Two Output Modes**:
   - **Type** - Types transcribed text into the focused window
   - **Clipboard** - Copies transcribed text to clipboard
@@ -16,13 +15,15 @@ Local speech-to-text daemon using the Moonshine AI model. Works completely offli
   - Filler word removal (um, uh, etc.)
   - Voice commands (say "new line", "period", etc.)
   - Auto-capitalization
-- **Transcription History** - Access recent transcriptions from the tray menu
-- **Device Selection** - Choose audio input device from tray or CLI
-- **USB Headset Keep-Alive** - Prevents USB audio devices from sleeping
+- **Dual Transcription Backends**:
+  - **Moonshine** - Fast, streaming, supports en/es/ar/ja
+  - **Whisper** - Slower, supports 40+ languages including German
+- **Rofi Launcher** - Quick access menu via rofi
+- **Home Manager Integration** - Declarative NixOS configuration
 
 ## Installation
 
-### NixOS / Nix Flakes
+### Home Manager (Recommended)
 
 Add to your flake inputs:
 
@@ -32,19 +33,35 @@ Add to your flake inputs:
 }
 ```
 
-Then include in your system packages:
+Then in your home.nix:
 
 ```nix
-environment.systemPackages = [ inputs.moonshine.packages.${system}.default ];
+{ inputs, pkgs, ... }:
+{
+  imports = [ inputs.moonshine.homeManagerModules.default ];
+
+  services.moonshine = {
+    enable = true;
+    package = inputs.moonshine.packages.${pkgs.system}.default;
+    settings = {
+      device = "PRO X";           # Audio device substring
+      language = "en";
+      backend = "moonshine";
+      autoPunctuation = true;
+      autoCapitalize = true;
+      fillerRemoval = true;
+      voiceCommands = true;
+      numberFormat = "words";     # or "digits"
+      silenceTimeout = 3;         # seconds before auto-stop in PTT mode
+    };
+    verbose = false;
+  };
+}
 ```
 
-Or run directly:
+This creates a systemd user service that starts automatically on login.
 
-```bash
-nix run github:loljeah/moonshine
-```
-
-### Building from Source
+### Manual Installation
 
 ```bash
 git clone https://github.com/loljeah/moonshine.git
@@ -53,12 +70,10 @@ nix build
 ./result/bin/moonshine-daemon
 ```
 
-### Development
+Or run directly:
 
 ```bash
-nix develop
-go build ./cmd/moonshine-daemon
-go build ./cmd/moonshine-ctl
+nix run github:loljeah/moonshine
 ```
 
 ## Usage
@@ -66,28 +81,17 @@ go build ./cmd/moonshine-ctl
 ### Starting the Daemon
 
 ```bash
-moonshine-daemon          # Normal mode
-moonshine-daemon -v       # Verbose logging
+moonshine-daemon              # Normal mode
+moonshine-daemon --verbose    # Verbose logging
 ```
 
-The daemon starts with:
-- **Always Listening** mode enabled
-- **Type** output mode (types into focused window)
-- System tray icon visible
+Or via systemd (if using Home Manager):
 
-### System Tray Menu
-
-| Menu Item | Description |
-|-----------|-------------|
-| Status | Shows current state (Ready, Listening, Recording, Processing) |
-| Enabled/Disabled | Master toggle to enable/disable all recognition |
-| Always Listening | Continuous speech recognition mode |
-| Press to Talk | Manual recording mode |
-| Clipboard | Output transcriptions to clipboard |
-| Type | Output transcriptions by typing |
-| Device | Select audio input device |
-| History | View and copy recent transcriptions |
-| Quit | Stop the daemon |
+```bash
+systemctl --user start moonshine-daemon
+systemctl --user status moonshine-daemon
+journalctl --user -u moonshine-daemon -f
+```
 
 ### CLI Control (moonshine-ctl)
 
@@ -97,12 +101,14 @@ moonshine-ctl status
 
 # Toggle recording (Press to Talk mode)
 moonshine-ctl toggle
+moonshine-ctl toggle clipboard   # Toggle and output to clipboard
+moonshine-ctl toggle type        # Toggle and output by typing
 
 # Switch output mode
 moonshine-ctl mode clipboard
 moonshine-ctl mode type
 
-# Control Always Listening
+# Control Always Listening (Free Speech)
 moonshine-ctl freespeech on
 moonshine-ctl freespeech off
 moonshine-ctl freespeech toggle
@@ -114,59 +120,91 @@ moonshine-ctl devices
 moonshine-ctl device "USB Headset"
 
 # View/change settings
-moonshine-ctl settings                    # List all
-moonshine-ctl settings auto_punctuation   # Get one
-moonshine-ctl settings auto_punctuation off  # Set
+moonshine-ctl settings                       # List all
+moonshine-ctl settings AUTO_PUNCTUATION      # Get one
+moonshine-ctl settings AUTO_PUNCTUATION off  # Set
+
+# Undo last transcription
+moonshine-ctl scratch
+
+# View daemon logs
+moonshine-ctl logs
+moonshine-ctl logs 100   # Last 100 lines
 
 # Stop daemon
 moonshine-ctl quit
 ```
 
+### Rofi Launcher
+
+```bash
+moonshine-rofi
+```
+
+Or bind to a key in your window manager:
+
+```bash
+# Sway example
+bindsym $mod+Shift+v exec moonshine-rofi
+```
+
 ### Socket API
 
-The daemon listens on `/tmp/moonshine/moonshine.sock` for control commands:
+The daemon listens on `/tmp/moonshine/moonshine.sock`:
 
 ```bash
 echo "status" | nc -U /tmp/moonshine/moonshine.sock
 echo "freespeech toggle" | nc -U /tmp/moonshine/moonshine.sock
-echo "settings" | nc -U /tmp/moonshine/moonshine.sock
+echo "toggle clipboard" | nc -U /tmp/moonshine/moonshine.sock
+```
+
+### Keybindings Example (Sway)
+
+```bash
+# Toggle recording
+bindsym $mod+v exec moonshine-ctl toggle
+
+# Toggle Free Speech mode
+bindsym $mod+Shift+v exec moonshine-ctl freespeech toggle
+
+# Open rofi menu
+bindsym $mod+Ctrl+v exec moonshine-rofi
 ```
 
 ## Configuration
 
-Config file location: `~/.config/moonshine/config`
-
-The config file uses simple `KEY=VALUE` format:
+Config file: `~/.config/moonshine/config`
 
 ```bash
 # Audio device (substring match)
-DEVICE=USB Headset
+DEVICE=PRO X
 
-# Language for transcription
+# Transcription backend: moonshine or whisper
+BACKEND=moonshine
+
+# Language (moonshine: en/es/ar/ja, whisper: 40+ languages)
 LANGUAGE=en
 
-# Text processing options (on/off)
+# Text processing (on/off)
 AUTO_PUNCTUATION=on
 AUTO_CAPITALIZE=on
 FILLER_REMOVAL=on
 VOICE_COMMANDS=on
 
-# Number format: "words" or "digits"
-# "digits" converts "twenty three" to "23"
+# Number format: words or digits
+# digits converts "twenty three" to "23"
 NUMBER_FORMAT=words
+
+# Punctuation added at sentence end (. or empty for none)
+SENTENCE_END=.
+
+# Seconds of silence before auto-stop in PTT mode (0 = manual only)
+SILENCE_TIMEOUT=3
+
+# Whisper-specific settings
+WHISPER_MODEL=/path/to/ggml-base.bin
+THREADS=4
 ```
-
-### Configuration Options
-
-| Option | Values | Default | Description |
-|--------|--------|---------|-------------|
-| `DEVICE` | string | (auto) | Audio input device substring |
-| `LANGUAGE` | string | `en` | Transcription language |
-| `AUTO_PUNCTUATION` | on/off | `on` | Add periods and question marks |
-| `AUTO_CAPITALIZE` | on/off | `on` | Capitalize sentences and "I" |
-| `FILLER_REMOVAL` | on/off | `on` | Remove "um", "uh", etc. |
-| `VOICE_COMMANDS` | on/off | `on` | Expand voice commands |
-| `NUMBER_FORMAT` | words/digits | `words` | Number formatting |
 
 ### Voice Commands
 
@@ -186,51 +224,32 @@ When `VOICE_COMMANDS=on`, these phrases are expanded:
 | "double quote" | `"` |
 | "open paren" | `(` |
 | "close paren" | `)` |
-| "open bracket" | `[` |
-| "close bracket" | `]` |
-| "open brace" | `{` |
-| "close brace" | `}` |
 | "tab" | Tab character |
 | "space" | Space |
-| "backspace" | Backspace key |
-| "dash" / "hyphen" / "minus" | `-` |
+| "dash" / "hyphen" | `-` |
 | "underscore" | `_` |
-| "plus" | `+` |
-| "equals" | `=` |
-| "slash" | `/` |
-| "backslash" | `\` |
-| "asterisk" / "star" | `*` |
-| "hash" / "pound" | `#` |
-| "ampersand" | `&` |
-| "pipe" | `\|` |
-| "dollar sign" | `$` |
-| "double ampersand" | `&&` |
-| "double pipe" | `\|\|` |
-| "double equals" | `==` |
 | "arrow up/down/left/right" | Arrow keys |
+| "scratch that" | Undo last output |
 
-## Runtime Settings
+### User Macros
 
-Settings can be changed at runtime via the socket API without restarting:
+Create `~/.config/moonshine/macros` for custom expansions:
 
-```bash
-# Disable auto-punctuation
-echo "settings auto_punctuation off" | nc -U /tmp/moonshine/moonshine.sock
-
-# Enable digit conversion
-echo "settings number_format digits" | nc -U /tmp/moonshine/moonshine.sock
 ```
-
-Note: Runtime changes are not persisted to the config file.
+my email = user@example.com
+shebang = #!/usr/bin/env bash
+home address = 123 Main St, City
+```
 
 ## Files and Directories
 
 | Path | Description |
 |------|-------------|
 | `~/.config/moonshine/config` | Configuration file |
+| `~/.config/moonshine/macros` | User-defined voice macros |
 | `~/.local/share/moonshine/history.log` | Transcription history |
+| `~/.local/share/moonshine/daemon.log` | Daemon log file |
 | `/tmp/moonshine/moonshine.sock` | Unix socket for control |
-| `/tmp/moonshine/status` | Current state file |
 
 ## Requirements
 
@@ -242,15 +261,29 @@ Note: Runtime changes are not persisted to the config file.
 ## Architecture
 
 ```
-moonshine-daemon
-├── System Tray (fyne.io/systray)
-├── Moonshine Transcriber (CGO → libmoonshine.so)
-├── PipeWire Audio (pw-record streaming)
-├── Socket Server (Unix socket API)
-└── Output (wtype/wl-clipboard)
+moonshine-daemon (headless service)
+├── Socket Server (/tmp/moonshine/moonshine.sock)
+├── Transcriber (Moonshine or Whisper backend)
+│   ├── Moonshine (CGO → libmoonshine.so)
+│   └── Whisper (whisper.cpp bindings)
+├── Audio (PipeWire pw-record streaming)
+└── Output (wtype/wl-clipboard/notify-send)
+
+moonshine-ctl (CLI client)
+└── Sends commands to socket
+
+moonshine-rofi (launcher)
+└── Rofi menu → moonshine-ctl
 ```
 
-The daemon uses a streaming transcription model that processes audio in real-time chunks, providing continuous transcription in Always Listening mode.
+## Development
+
+```bash
+nix develop
+go build ./cmd/moonshine-daemon
+go build ./cmd/moonshine-ctl
+./moonshine-daemon --verbose
+```
 
 ## License
 

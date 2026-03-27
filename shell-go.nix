@@ -15,12 +15,6 @@ pkgs.mkShell {
     gcc
     pkg-config
 
-    # System tray (fyne.io/systray SNI/D-Bus)
-    dbus
-    libayatana-appindicator
-    gtk3
-    glib
-
     # Audio tools
     pipewire
 

@@ -1,52 +1,105 @@
 # Session Journal — Moonshine
 
-## Session: 2026-03-21
+## Session: 2026-03-27
 
-### Status
+### Summary
 
-**Uncommitted changes** in 3 files (+193 lines):
+Removed system tray and Waybar integration to make the application purely userspace-runnable via home.nix without GUI dependencies.
 
-1. `internal/daemon/daemon.go` — In-memory history buffer + arrow key voice commands
-2. `internal/daemon/output.go` — TypeText() now parses `{KEY}` placeholders for wtype `-k`
-3. `internal/tray/tray.go` — History submenu (20 slots), click-to-copy, auto-refresh
+### Changes Made
 
-### Uncommitted Features
+#### Commit: b4672ce — Remove system tray and Waybar integration
 
-#### 1. In-Memory History Buffer
-- `HistoryEntry` struct with `Time`, `Mode`, `Text`
-- `loadHistory()` parses existing log file into memory on startup
-- `History()` returns entries most-recent-first
-- Capped at 50 entries (`maxHistoryEntries`)
+**Files Deleted:**
+- `internal/tray/tray.go` — System tray UI (395 lines)
+- `internal/tray/icons.go` — Embedded tray icons (215 lines)
+- `vendor/fyne.io/systray/` — Entire systray library
+- `vendor/github.com/godbus/dbus/` — D-Bus dependency
 
-#### 2. Arrow Key Voice Commands
-New expansions in `expandVoiceCommands()`:
-- "arrow down" → `{Down}`
-- "arrow up" → `{Up}`
-- "arrow left" → `{Left}`
-- "arrow right" → `{Right}`
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `cmd/moonshine-daemon/main.go` | Removed tray import, `--no-tray` flag, `tray.Run()` call |
+| `internal/daemon/socket.go` | Removed `status json` command, `writeStatusJSON()` function |
+| `go.mod` | Removed `fyne.io/systray`, `godbus/dbus` dependencies |
+| `go.sum` | Removed systray and dbus entries |
+| `vendor/modules.txt` | Removed systray and dbus entries |
+| `flake.nix` | Removed `dbus`, `libayatana-appindicator`, `gtk3`, `glib` from buildInputs |
+| `nix/hm-module.nix` | Removed `enableTray` option |
 
-#### 3. TypeText {KEY} Parsing
-`output.go` now parses `{KEY}` placeholders and builds wtype args:
-- Text segments → passed as positional args
-- `{KEY}` → `-k KEY`
-- Example: `hello{Down}world` → `wtype -d 12 hello -k Down world`
+**Impact:**
+- Removed 12,302 lines of code (70 files)
+- No more D-Bus/GTK dependencies
+- Daemon runs headless via systemd user service
+- Control via `moonshine-ctl` or `moonshine-rofi`
 
-#### 4. Tray History Submenu
-- 20 pre-allocated slots in "History" submenu
-- Shows timestamp + truncated text (60 chars max)
-- Click copies full text to clipboard
-- Auto-refreshes when state returns to idle/listening
-- Shows count in submenu title: "History (5)"
+### Current Architecture
+
+```
+moonshine-daemon (headless service)
+├── Socket IPC (/tmp/moonshine/moonshine.sock)
+├── Transcriber (Moonshine or Whisper backend)
+├── Audio (PipeWire recording)
+├── Output (wl-copy, wtype, notify-send)
+└── Config (~/.config/moonshine/config)
+
+moonshine-ctl (CLI client)
+└── Sends commands to socket, receives responses
+
+moonshine-rofi (launcher)
+└── Rofi menu that calls moonshine-ctl
+```
+
+### CLI Commands (via moonshine-ctl)
+
+```
+toggle [clipboard|type]   Start/stop recording
+status                    Get current state
+mode [clipboard|type]     Get/set output mode
+device <name>             Switch audio input
+devices                   List available devices
+freespeech on|off|toggle  Control always-listening
+listen start|stop         Start/stop FreeSpeech mode
+logs [n]                  View daemon logs
+settings [key [value]]    Get/set config
+scratch                   Undo last output
+quit                      Shutdown daemon
+```
+
+### home.nix Usage
+
+```nix
+services.moonshine = {
+  enable = true;
+  package = inputs.moonshine.packages.${system}.default;
+  settings = {
+    device = "PRO X";
+    language = "en";
+    backend = "moonshine";
+  };
+  verbose = false;
+};
+```
+
+### Commits This Session
+
+| Commit | Description |
+|--------|-------------|
+| `b4672ce` | Remove system tray and Waybar integration for pure userspace CLI |
+
+### Current State
+
+- All changes committed and pushed to `origin/master`
+- Build verified (`go vet`, `go build`, `nix flake check` pass)
+- Daemon runs headless, controlled via socket IPC
 
 ### Open Questions
 
-- None currently blocking
+- None
 
-### Next Steps
+### Next Steps (potential)
 
-Likely candidates for next development:
-- Commit current changes
-- Add more voice commands (backspace, delete, escape, etc.)
-- History search/filter in tray
-- Waybar module update to show last transcription
-- Settings UI in tray (verbosity, sounds on/off)
+- Add more voice commands (backspace, delete, escape)
+- German filler patterns for `LANGUAGE=de`
+- Auto-restart daemon on config change
+- Additional language options
