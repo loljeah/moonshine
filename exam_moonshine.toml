@@ -1,0 +1,604 @@
+[meta]
+project = "moonshine"
+version = "1.0"
+generated = "2026-03-24"
+voice_ready = true
+pass_threshold = 60
+total_xp = 150
+content_type = "technical"
+
+# ═══════════════════════════════════════════════════════════════════
+# KNOWLEDGE DOMAINS
+# ═══════════════════════════════════════════════════════════════════
+[[meta.domain]]
+id = "architecture"
+name = "Daemon Architecture"
+description = "State machine, recording, and transcription pipeline"
+color = "#8B5CF6"
+icon = "🎙️"
+sprints = [1, 2]
+total_xp = 60
+
+[[meta.domain]]
+id = "processing"
+name = "Text Processing"
+description = "Punctuation, voice commands, and output formatting"
+color = "#10B981"
+icon = "📝"
+sprints = [3]
+total_xp = 30
+
+[[meta.domain]]
+id = "config"
+name = "Configuration"
+description = "Settings, modes, and device management"
+color = "#F59E0B"
+icon = "⚙️"
+sprints = [4]
+total_xp = 30
+
+[[meta.domain]]
+id = "integration"
+name = "Integration"
+description = "Client integration, output modes, and debugging"
+color = "#EC4899"
+icon = "🔗"
+sprints = [5]
+total_xp = 30
+
+# ═══════════════════════════════════════════════════════════════════
+# DOMAIN ACHIEVEMENTS
+# ═══════════════════════════════════════════════════════════════════
+[[meta.achievement]]
+id = "arch_novice"
+domain = "architecture"
+name = "Listener"
+description = "Understand the recording state machine"
+condition = "domain_sprints_passed >= 1"
+xp_reward = 20
+icon = "👂"
+
+[[meta.achievement]]
+id = "arch_expert"
+domain = "architecture"
+name = "Transcription Architect"
+description = "Master all architecture concepts"
+condition = "domain_sprints_passed == domain_sprints_total"
+xp_reward = 40
+icon = "🏗️"
+
+[[meta.achievement]]
+id = "processing_master"
+domain = "processing"
+name = "Text Alchemist"
+description = "Know the text processing pipeline"
+condition = "domain_sprints_passed >= 1"
+xp_reward = 30
+icon = "📝"
+
+[[meta.achievement]]
+id = "config_master"
+domain = "config"
+name = "Config Tuner"
+description = "Configure moonshine like a pro"
+condition = "domain_sprints_passed >= 1"
+xp_reward = 30
+icon = "🎛️"
+
+[[meta.achievement]]
+id = "integration_master"
+domain = "integration"
+name = "Integration Expert"
+description = "Build reliable STT integrations"
+condition = "domain_sprints_passed >= 1"
+xp_reward = 30
+icon = "🔗"
+
+[[meta.achievement]]
+id = "moonshine_complete"
+domain = "architecture"
+name = "Moonshine Master"
+description = "Pass all moonshine sprints"
+condition = "all_sprints_passed"
+xp_reward = 50
+icon = "🌙"
+
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 1: State Machine Fundamentals
+# ═══════════════════════════════════════════════════════════════════
+[[sprint]]
+number = 1
+topic = "State Machine Basics"
+domain = "architecture"
+target_minutes = 4
+xp_available = 30
+
+[[sprint.question]]
+number = 1
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "What are the THREE states in the moonshine-daemon state machine?"
+type = "single"
+options = [
+    "Idle, Recording, Processing",
+    "Stopped, Listening, Transcribing",
+    "Ready, Capturing, Outputting",
+    "Init, Active, Done"
+]
+answer = 0
+hint = "Think about the three phases: waiting, capturing audio, converting to text."
+explanation = "The daemon cycles through Idle (waiting for trigger), Recording (capturing audio from mic), and Processing (running Moonshine AI model). Clear separation enables responsive UI feedback."
+file_ref = "internal/daemon/daemon.go:52-65"
+
+[[sprint.question]]
+number = 2
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "What IPC mechanism does moonshine-daemon use?"
+type = "single"
+options = [
+    "TCP socket on port 9999",
+    "Unix domain socket",
+    "Named pipe (FIFO)",
+    "Shared memory"
+]
+answer = 1
+hint = "Same as piper-daemon - local, secure, no network."
+explanation = "Unix domain socket at /tmp/moonshine/moonshine.sock. Provides secure local IPC without network exposure. Text-based protocol for simple client implementation."
+file_ref = "internal/daemon/socket.go:25-40"
+
+[[sprint.question]]
+number = 3
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "The 'toggle' command starts or stops recording. What determines which action occurs?"
+type = "single"
+options = [
+    "A separate 'mode' parameter",
+    "Current state: Idle→start recording, Recording→stop and process",
+    "Toggle always starts, use 'stop' to stop",
+    "User must specify 'toggle start' or 'toggle stop'"
+]
+answer = 1
+hint = "It's a true toggle - behavior depends on current state."
+explanation = "Toggle checks current state. If Idle, transitions to Recording. If Recording, stops and transitions to Processing. This enables single-key push-to-talk workflows."
+file_ref = "internal/daemon/daemon.go:145-170"
+
+[[sprint.question]]
+number = 4
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "Why does moonshine use a SEPARATE Processing state instead of transcribing during Recording?"
+type = "single"
+options = [
+    "The AI model can't run while recording",
+    "Allows user to see 'processing...' feedback",
+    "Recording quality is affected by CPU load",
+    "Both B and C are correct"
+]
+answer = 3
+hint = "Consider both UX and technical factors."
+explanation = "Separating Recording from Processing lets the UI show progress feedback AND prevents CPU-intensive transcription from degrading audio capture quality. The model runs after audio is complete."
+file_ref = "internal/daemon/daemon.go:175-195"
+
+[[sprint.question]]
+number = 5
+tier = "APPLICATION"
+difficulty = 3
+xp = 10
+text = "In 'freespeech' (always-listening) mode, what triggers processing of recorded audio?"
+type = "single"
+options = [
+    "User says a wake word",
+    "Silence detection - pause in speech triggers processing",
+    "Fixed time intervals (every 5 seconds)",
+    "Manual 'process' command"
+]
+answer = 1
+hint = "Natural speech has natural pauses."
+explanation = "Freespeech mode uses voice activity detection. Recording continues until silence threshold is met, then audio chunk is processed. This enables continuous dictation without manual triggers."
+file_ref = "internal/daemon/daemon.go:220-250"
+
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 2: Audio Capture
+# ═══════════════════════════════════════════════════════════════════
+[[sprint]]
+number = 2
+topic = "Audio Pipeline"
+domain = "architecture"
+target_minutes = 4
+xp_available = 30
+
+[[sprint.question]]
+number = 1
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "What tool does moonshine use to capture audio from the microphone?"
+type = "single"
+options = [
+    "arecord (ALSA)",
+    "parecord (PulseAudio)",
+    "pw-record (PipeWire)",
+    "ffmpeg"
+]
+answer = 2
+hint = "Same audio system as piper-daemon uses for playback."
+explanation = "pw-record from PipeWire captures audio. PipeWire is the modern Linux audio stack, handling both playback (piper) and capture (moonshine) consistently."
+file_ref = "internal/audio/recorder.go:45-60"
+
+[[sprint.question]]
+number = 2
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "What audio format does the Moonshine model expect?"
+type = "single"
+options = [
+    "MP3, 44.1kHz stereo",
+    "WAV, 16kHz mono, 16-bit PCM",
+    "FLAC, 48kHz stereo",
+    "OGG, 22kHz mono"
+]
+answer = 1
+hint = "Speech recognition models are optimized for specific formats."
+explanation = "Moonshine expects 16kHz mono 16-bit PCM - the standard for speech recognition. pw-record is configured to capture in this format directly, avoiding resampling."
+file_ref = "internal/transcriber/moonshine.go:35-45"
+
+[[sprint.question]]
+number = 3
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "How does the daemon know which microphone to use?"
+type = "single"
+options = [
+    "Always uses system default",
+    "Configured in config file, changeable via 'device' command",
+    "Auto-detects the best microphone",
+    "Prompts user on first run"
+]
+answer = 1
+hint = "Users with multiple mics need control."
+explanation = "The 'device' command lists and selects audio input devices. Selection persists in config. 'device list' shows options, 'device <name>' selects. Falls back to default if not set."
+file_ref = "internal/audio/devices.go:25-55"
+
+[[sprint.question]]
+number = 4
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "The daemon records to a file, then processes. Why not stream directly to the model?"
+type = "single"
+options = [
+    "Moonshine doesn't support streaming",
+    "File provides replay capability for debugging",
+    "Streaming would require real-time processing",
+    "All of the above"
+]
+answer = 3
+hint = "Multiple reasons combine here."
+explanation = "Moonshine's architecture requires complete audio. Files enable debug replay ('last' command). Streaming would need chunked real-time processing which the model doesn't support well."
+file_ref = "internal/daemon/daemon.go:200-220"
+
+[[sprint.question]]
+number = 5
+tier = "APPLICATION"
+difficulty = 3
+xp = 10
+text = "Recording fails with 'no audio devices found'. What should you check FIRST?"
+type = "single"
+options = [
+    "Moonshine model installation",
+    "PipeWire is running: 'systemctl --user status pipewire'",
+    "Config file syntax",
+    "Socket permissions"
+]
+answer = 1
+hint = "No devices = no audio system, not a moonshine problem."
+explanation = "If PipeWire isn't running, pw-record has nothing to record from. Check: pipewire and wireplumber services. Also verify mic permissions in audio settings."
+file_ref = ".context/PROJECT.md:85-95"
+
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 3: Text Processing
+# ═══════════════════════════════════════════════════════════════════
+[[sprint]]
+number = 3
+topic = "Text Pipeline"
+domain = "processing"
+target_minutes = 5
+xp_available = 30
+
+[[sprint.question]]
+number = 1
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "Moonshine outputs raw transcription. What post-processing does the daemon apply?"
+type = "single"
+options = [
+    "Nothing - raw text is output directly",
+    "Auto-punctuation, capitalization, number conversion",
+    "Translation to user's language",
+    "Grammar correction via AI"
+]
+answer = 1
+hint = "Raw STT output needs cleanup for usability."
+explanation = "The text pipeline adds periods/question marks, capitalizes sentences, converts 'twenty three' to '23'. This makes output readable without user editing."
+file_ref = "internal/daemon/daemon.go:280-320"
+
+[[sprint.question]]
+number = 2
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "Which of these is a supported voice command?"
+type = "single"
+options = [
+    "'undo last word'",
+    "'new line'",
+    "'save file'",
+    "'exit program'"
+]
+answer = 1
+hint = "Voice commands control text output, not applications."
+explanation = "Voice commands like 'new line', 'period', 'comma', 'question mark' insert formatting. These are recognized and converted before output. 'new line' inserts \\n."
+file_ref = "internal/daemon/daemon.go:350-380"
+
+[[sprint.question]]
+number = 3
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "Auto-punctuation adds periods. How does it decide where?"
+type = "single"
+options = [
+    "After every 10 words",
+    "Uses AI grammar model",
+    "Detects sentence-ending pause patterns in audio",
+    "User must say 'period'"
+]
+answer = 2
+hint = "The audio itself contains cues."
+explanation = "Longer pauses typically indicate sentence boundaries. The daemon analyzes pause durations from the audio and inserts periods at likely sentence ends. Not perfect, but usable."
+file_ref = "internal/daemon/daemon.go:295-310"
+
+[[sprint.question]]
+number = 4
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "You say 'um I think uh the answer is yes'. What does the daemon output?"
+type = "single"
+options = [
+    "'um I think uh the answer is yes'",
+    "'I think the answer is yes.'",
+    "'the answer is yes'",
+    "Error - filler words not recognized"
+]
+answer = 1
+hint = "Filler word removal is a configurable feature."
+explanation = "With filler removal enabled, 'um', 'uh', 'like', etc. are stripped. Auto-punctuation adds the period. Result is clean output: 'I think the answer is yes.'"
+file_ref = "internal/daemon/daemon.go:335-350"
+
+[[sprint.question]]
+number = 5
+tier = "APPLICATION"
+difficulty = 3
+xp = 10
+text = "You say 'my phone number is five five five one two three four'. What is output?"
+type = "single"
+options = [
+    "'my phone number is five five five one two three four'",
+    "'my phone number is 5551234'",
+    "'My phone number is 555-1234.'",
+    "'my phone number is 555 123 4'"
+]
+answer = 2
+hint = "Number conversion + punctuation + capitalization all apply."
+explanation = "Number words become digits (555-1234 with common phone formatting), sentence is capitalized, period added. The pipeline transforms natural speech to formatted text."
+file_ref = "internal/daemon/daemon.go:320-335"
+
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 4: Configuration
+# ═══════════════════════════════════════════════════════════════════
+[[sprint]]
+number = 4
+topic = "Settings & Modes"
+domain = "config"
+target_minutes = 4
+xp_available = 30
+
+[[sprint.question]]
+number = 1
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "Where is the moonshine configuration file located?"
+type = "single"
+options = [
+    "/etc/moonshine/config",
+    "~/.config/moonshine/config",
+    "~/.moonshine.conf",
+    "/var/lib/moonshine/settings"
+]
+answer = 1
+hint = "XDG Base Directory, like piper-daemon."
+explanation = "Config at ~/.config/moonshine/config using simple KEY=VALUE format. Created with defaults on first run. 'settings' command can modify values."
+file_ref = "internal/config/config.go:20-35"
+
+[[sprint.question]]
+number = 2
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "What are the two output modes?"
+type = "single"
+options = [
+    "file and console",
+    "clipboard and type",
+    "speak and save",
+    "print and log"
+]
+answer = 1
+hint = "Think about where transcribed text goes."
+explanation = "Clipboard mode copies text to clipboard (wl-copy). Type mode types text into focused window (wtype). Both are Wayland-native. Mode set via 'mode' command."
+file_ref = "internal/daemon/output.go:30-60"
+
+[[sprint.question]]
+number = 3
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "What is 'freespeech' mode?"
+type = "single"
+options = [
+    "Unlimited recording length",
+    "Always-listening with automatic processing on silence",
+    "No text processing (raw output)",
+    "Voice-only control (no socket commands)"
+]
+answer = 1
+hint = "Hands-free continuous dictation."
+explanation = "Freespeech enables continuous listening. Audio is processed when silence is detected. No need to toggle - just speak, pause, text appears. Great for long-form dictation."
+file_ref = "internal/daemon/daemon.go:220-250"
+
+[[sprint.question]]
+number = 4
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "You want to disable auto-punctuation. Which setting?"
+type = "single"
+options = [
+    "settings auto_punctuation off",
+    "settings punctuation=false",
+    "settings raw=true",
+    "settings format=none"
+]
+answer = 0
+hint = "Settings command uses key-value pairs."
+explanation = "The 'settings' command sets text processing options. 'settings auto_punctuation off' disables. Other options: filler_removal, auto_capitalize, voice_commands."
+file_ref = "internal/daemon/socket.go:180-210"
+
+[[sprint.question]]
+number = 5
+tier = "APPLICATION"
+difficulty = 3
+xp = 10
+text = "In type mode, what happens if no window is focused?"
+type = "single"
+options = [
+    "Text is lost",
+    "Error returned to client",
+    "Text falls back to clipboard",
+    "Daemon waits for window focus"
+]
+answer = 2
+hint = "Graceful degradation is good UX."
+explanation = "If wtype fails (no focused window), the daemon automatically falls back to clipboard mode. User can paste later. Better than losing transcription or blocking."
+file_ref = "internal/daemon/output.go:75-90"
+
+# ═══════════════════════════════════════════════════════════════════
+# SPRINT 5: Integration & Debugging
+# ═══════════════════════════════════════════════════════════════════
+[[sprint]]
+number = 5
+topic = "Integration Patterns"
+domain = "integration"
+target_minutes = 5
+xp_available = 30
+
+[[sprint.question]]
+number = 1
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "How does a client check if moonshine-daemon is ready?"
+type = "single"
+options = [
+    "HTTP health endpoint",
+    "Send 'status' command, check response",
+    "Read PID file",
+    "Try to connect, assume ready if no error"
+]
+answer = 1
+hint = "Similar to piper-daemon's approach."
+explanation = "'status' returns current state, device info, and settings. Clients use this to verify daemon is running and ready before sending commands."
+file_ref = "internal/daemon/socket.go:65-90"
+
+[[sprint.question]]
+number = 2
+tier = "RECALL"
+difficulty = 1
+xp = 10
+text = "The exambuilder's Listen() function does what?"
+type = "single"
+options = [
+    "Plays audio and waits for completion",
+    "Sends 'toggle' to start recording, waits, sends 'toggle' again, returns transcription",
+    "Streams audio to moonshine",
+    "Opens microphone directly in Go"
+]
+answer = 1
+hint = "It coordinates the recording cycle."
+explanation = "Listen() sends 'toggle' (starts recording), waits for user, sends 'toggle' again (stops and processes), then reads the transcription result from daemon response."
+file_ref = "exambuilder/internal/voice/voice.go:110-135"
+
+[[sprint.question]]
+number = 3
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "Transcription returns garbage text. What's the MOST likely cause?"
+type = "single"
+options = [
+    "Wrong microphone selected (picking up noise)",
+    "Network connectivity issue",
+    "Config file syntax error",
+    "Moonshine model corrupted"
+]
+answer = 0
+hint = "Garbage in, garbage out. Check the input first."
+explanation = "Wrong device often means the daemon records system audio or a non-working mic. Use 'device list' to see options, 'device <name>' to select correct input. Test with pw-record manually."
+file_ref = ".context/PROJECT.md:75-85"
+
+[[sprint.question]]
+number = 4
+tier = "COMPREHENSION"
+difficulty = 2
+xp = 10
+text = "Processing takes 10+ seconds for short audio. What should you check?"
+type = "single"
+options = [
+    "Audio file is corrupted",
+    "Moonshine is running on CPU instead of GPU",
+    "Config has slow_mode enabled",
+    "Daemon needs restart"
+]
+answer = 1
+hint = "Neural models are MUCH faster on GPU."
+explanation = "Moonshine on CPU is slow. Check if CUDA/ROCm is available. The model should load GPU automatically but may fall back to CPU. 'status' shows accelerator info."
+file_ref = "internal/transcriber/moonshine.go:55-70"
+
+[[sprint.question]]
+number = 5
+tier = "APPLICATION"
+difficulty = 3
+xp = 10
+text = "For voice-controlled exam answers, why does exambuilder use moonshine instead of cloud STT?"
+type = "single"
+options = [
+    "Cloud STT is less accurate",
+    "Privacy - exam answers shouldn't leave the device",
+    "Cost savings on API calls",
+    "Both B and C are correct"
+]
+answer = 3
+hint = "Consider both privacy and operational costs."
+explanation = "Local STT keeps exam audio on-device (privacy). It also eliminates per-request API costs and network latency. Moonshine's accuracy is sufficient for single-word/letter answers."
+file_ref = "exambuilder/internal/voice/voice.go:15-25"
