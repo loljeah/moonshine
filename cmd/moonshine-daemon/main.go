@@ -14,7 +14,6 @@ import (
 	"moonshine-daemon/internal/daemon"
 	"moonshine-daemon/internal/moonshine"
 	"moonshine-daemon/internal/transcriber"
-	"moonshine-daemon/internal/tray"
 )
 
 const (
@@ -81,7 +80,6 @@ func setupLogging() func() {
 func main() {
 	configPath := flag.String("config", config.DefaultPath, "config file path")
 	verbose := flag.Bool("verbose", false, "verbose logging")
-	noTray := flag.Bool("no-tray", false, "disable system tray icon")
 	flag.Parse()
 
 	closeLog := setupLogging()
@@ -170,18 +168,6 @@ func main() {
 
 	fmt.Println("moonshine-daemon running")
 	fmt.Printf("  socket: %s\n", daemon.SocketPath)
-	if !*noTray {
-		fmt.Println("  tray: enabled")
-	}
-
-	if !*noTray {
-		// Start tray in background — if it exits (D-Bus flake), daemon keeps running
-		go func() {
-			log.Println("starting system tray...")
-			tray.Run(d, *verbose)
-			log.Println("system tray exited (daemon continues on socket)")
-		}()
-	}
 
 	// Block until signal or quit command
 	select {

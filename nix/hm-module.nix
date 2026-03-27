@@ -126,12 +126,6 @@ in {
       default = false;
       description = "Enable verbose daemon logging.";
     };
-
-    enableTray = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Show system tray icon.";
-    };
   };
 
   config = mkIf cfg.enable {
@@ -160,8 +154,7 @@ in {
         Type = "simple";
         ExecStart = lib.concatStringsSep " " ([
           "${cfg.package}/bin/moonshine-daemon"
-        ] ++ lib.optional cfg.verbose "--verbose"
-          ++ lib.optional (!cfg.enableTray) "--no-tray");
+        ] ++ lib.optional cfg.verbose "--verbose");
         Restart = "on-failure";
         RestartSec = 5;
       };

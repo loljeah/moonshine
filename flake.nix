@@ -88,10 +88,6 @@
 
             buildInputs = [
               moonshine-libs
-              pkgs.dbus
-              pkgs.libayatana-appindicator
-              pkgs.gtk3
-              pkgs.glib
             ];
 
             env = {
@@ -204,10 +200,6 @@
               go
               gcc
               pkg-config
-              dbus
-              libayatana-appindicator
-              gtk3
-              glib
             ] ++ runtimeDeps;
 
             CGO_ENABLED = "1";

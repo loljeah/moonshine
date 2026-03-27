@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -134,10 +133,6 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 		}
 
 	case "status":
-		if len(args) > 0 && args[0] == "json" {
-			s.writeStatusJSON(conn)
-			return
-		}
 		state := s.daemon.GetState()
 		fmt.Fprintf(conn, "OK %s\n", state)
 
@@ -306,67 +301,6 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 	default:
 		fmt.Fprintf(conn, "ERR unknown command: %s\n", cmd)
 	}
-}
-
-// writeStatusJSON outputs Waybar-compatible JSON for the current daemon state.
-func (s *SocketServer) writeStatusJSON(conn net.Conn) {
-	state := s.daemon.GetState()
-	mode := s.daemon.GetMode()
-	enabled := s.daemon.GetEnabled()
-	freeSpeech := s.daemon.GetFreeSpeech()
-
-	var text, alt, class string
-	percentage := 100
-
-	if !enabled {
-		text = "Disabled"
-		alt = "disabled"
-		class = "disabled"
-		percentage = 0
-	} else {
-		switch state {
-		case StateIdle:
-			text = "Ready"
-			alt = "idle"
-			class = "idle"
-		case StateRecording:
-			text = "Recording"
-			alt = "recording"
-			class = "recording"
-		case StateProcessing:
-			text = "Processing"
-			alt = "processing"
-			class = "processing"
-		case StateListening:
-			text = "Listening"
-			alt = "listening"
-			class = "listening"
-		case StateSpeechDetected:
-			text = "Speech"
-			alt = "speech"
-			class = "speech"
-		}
-	}
-
-	dest := "clipboard"
-	if mode == ModeType {
-		dest = "typing"
-	}
-	tooltip := "Moonshine → " + dest
-	if freeSpeech {
-		tooltip = "Always Listening → " + dest
-	}
-
-	data := map[string]interface{}{
-		"text":       text,
-		"alt":        alt,
-		"tooltip":    tooltip,
-		"class":      class,
-		"percentage": percentage,
-	}
-
-	out, _ := json.Marshal(data)
-	fmt.Fprintln(conn, string(out))
 }
 
 // Close shuts down the socket server and removes the socket file.
